@@ -361,6 +361,20 @@ void Shutdown(NodeContext& node)
     }
 
     // FlushStateToDisk generates a ChainStateFlushed callback, which we should avoid missing
+    // For in-memory chainstate: explicitly flush coins cache to memory DB first
+    #ifdef ENABLE_INMEMORYCS
+    if (node.chainman) {
+        LOCK(cs_main);
+        for (Chainstate* chainstate : node.chainman->GetAll()) {
+            if (chainstate->CanFlushToDisk()) {
+                // Explicitly flush coins cache to memory DB to ensure it's up-to-date
+                chainstate->CoinsTip().Flush();
+            }
+        }
+    }
+    #endif
+
+    // Then flush everything to disk (blocks, index) and to memory DB (coins)
     if (node.chainman) {
         LOCK(cs_main);
         for (Chainstate* chainstate : node.chainman->GetAll()) {
@@ -369,6 +383,20 @@ void Shutdown(NodeContext& node)
             }
         }
     }
+
+    // Then save in-memory chainstate to disk (must come AFTER ForceFlushStateToDisk)
+#ifdef ENABLE_INMEMORYCS
+    if (node.chainman && node.args) {
+        fs::path leveldb_path = node.args->GetDataDirNet() / "chainstate";
+        LOCK(cs_main);
+        LogInfo("Saving chainstate to disk...\n");
+        auto start = SteadyClock::now();
+        SaveChainstateToDisk(node.chainman->ActiveChainstate().CoinsDB(), leveldb_path);
+        auto end = SteadyClock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        LogInfo("Chainstate saved to disk in %.2fs\n", elapsed.count());
+    }
+#endif
 
     // After there are no more peers/RPC left to give us new data which may generate
     // CValidationInterface callbacks, flush them...
@@ -1546,6 +1574,9 @@ static ChainstateLoadResult InitAndLoadChainstate(
     options.check_blocks = args.GetIntArg("-checkblocks", DEFAULT_CHECKBLOCKS);
     options.check_level = args.GetIntArg("-checklevel", DEFAULT_CHECKLEVEL);
     options.require_full_verification = args.IsArgSet("-checkblocks") || args.IsArgSet("-checklevel");
+#ifdef ENABLE_INMEMORYCS
+    options.coins_db_in_memory = true;
+#endif
     options.coins_error_cb = [] {
         uiInterface.ThreadSafeMessageBox(
             _("Error reading from database, shutting down."),
@@ -2580,6 +2611,23 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             SyncCoinsTipAfterChainSync(node);
         }, SYNC_CHECK_INTERVAL);
     }
+
+#ifdef ENABLE_INMEMORYCS
+    // Schedule periodic chainstate save - runs every 24 hours
+    if (node.chainman && node.args) {
+        node.scheduler->scheduleEvery([chainman = node.chainman.get(), datadir = node.args->GetDataDirNet()]() {
+            fs::path leveldb_path = datadir / "chainstate";
+            LogInfo("Periodic chainstate save starting...\n");
+            try {
+                LOCK(cs_main);
+                SaveChainstateToDisk(chainman->ActiveChainstate().CoinsDB(), leveldb_path);
+                LogInfo("Periodic chainstate save complete\n");
+            } catch (const std::exception& e) {
+                LogError("Periodic chainstate save failed: %s\n", e.what());
+            }
+        }, std::chrono::hours(24));
+    }
+#endif
 
     return true;
 }

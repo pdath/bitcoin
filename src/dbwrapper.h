@@ -62,6 +62,14 @@ public:
 
 class CDBWrapper;
 
+#ifdef ENABLE_INMEMORYCS
+// Forward declarations for LevelDB types
+namespace leveldb {
+    class Snapshot;
+    class ReadOptions;
+} // namespace leveldb
+#endif
+
 /** These should be considered an implementation detail of the specific database.
  */
 namespace dbwrapper_private {
@@ -288,6 +296,27 @@ public:
      * Return true if the database managed by this class contains no entries.
      */
     bool IsEmpty();
+
+#ifdef ENABLE_INMEMORYCS
+    /**
+     * Get a snapshot of the current database state.
+     * @returns LevelDB snapshot pointer.
+     */
+    const leveldb::Snapshot* GetSnapshot();
+
+    /**
+     * Release a previously obtained snapshot.
+     * @param snapshot The snapshot to release.
+     */
+    void ReleaseSnapshot(const leveldb::Snapshot* snapshot);
+
+    /**
+     * Create a new iterator using custom read options (e.g., with a snapshot).
+     * @param read_options The read options to use.
+     * @returns New iterator.
+     */
+    CDBIterator* NewIterator(const leveldb::ReadOptions& read_options);
+#endif
 
     template<typename K>
     size_t EstimateSize(const K& key_begin, const K& key_end) const

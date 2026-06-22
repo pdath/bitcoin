@@ -212,6 +212,8 @@ option(ENABLE_EXTERNAL_SIGNER "Enable external signer support." ON)
 
 option(ENABLE_TOR_SUBPROCESS "Enable support for executing a dedicated Tor node." ON)
 
+option(ENABLE_INMEMORYCS "Enable in-memory chainstate mode" OFF)
+
 cmake_dependent_option(WITH_QRENCODE "Enable QR code support." ON "BUILD_GUI" OFF)
 if(WITH_QRENCODE)
   find_package(QRencode MODULE REQUIRED)
@@ -816,6 +818,7 @@ if(ENABLE_WALLET)
 endif()
 message("  external signer ..................... ${ENABLE_EXTERNAL_SIGNER}")
 message("  tor subprocess ...................... ${ENABLE_TOR_SUBPROCESS}")
+message("  in-memory chainstate ................ ${ENABLE_INMEMORYCS}")
 message("  port mapping using UPnP ............. ${WITH_MINIUPNPC}")
 message("  ZeroMQ .............................. ${WITH_ZMQ}")
 message("  USDT tracing ........................ ${WITH_USDT}")

@@ -22,6 +22,10 @@
 #include <util/translation.h>
 #include <validation.h>
 
+#ifdef ENABLE_INMEMORYCS
+#include <util/fs_helpers.h>
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <vector>
@@ -67,6 +71,8 @@ static ChainstateLoadResult CompleteChainstateInitialization(
     }
 
     auto is_coinsview_empty = [&](Chainstate* chainstate) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        // Skip if chainstate not fully initialized (m_coins_views may be null)
+        if (!chainstate->m_coins_views) return true;
         return options.wipe_chainstate_db || chainstate->CoinsTip().GetBestBlock().IsNull();
     };
 
@@ -87,14 +93,35 @@ static ChainstateLoadResult CompleteChainstateInitialization(
         LogPrintf("Initializing chainstate %s\n", chainstate->ToString());
 
         try {
+            // For snapshot chainstates, use disk-based database even if ENABLE_INMEMORYCS is ON
+            bool in_memory = options.coins_db_in_memory && !chainstate->m_from_snapshot_blockhash;
             chainstate->InitCoinsDB(
                 /*cache_size_bytes=*/chainman.m_total_coinsdb_cache * init_cache_fraction,
-                /*in_memory=*/options.coins_db_in_memory,
-                /*should_wipe=*/options.wipe_chainstate_db);
+                /*in_memory=*/in_memory,
+                /*should_wipe=*/options.wipe_chainstate_db,
+                /*leveldb_name=*/in_memory ? "chainstate.inmemory" : "chainstate");
         } catch (dbwrapper_error& err) {
             LogError("%s\n", err.what());
             return {ChainstateLoadStatus::FAILURE, _("Error opening coins database")};
         }
+
+#ifdef ENABLE_INMEMORYCS
+        // Load chainstate from disk into memory immediately after creating in-memory DB
+        // This must happen before ReplayBlocks() so that the coins DB is populated
+        // Skip loading if:
+        // 1. wipe_chainstate_db is true (e.g., during -reindex)
+        // 2. This is a snapshot chainstate (from_snapshot_blockhash is set)
+        //    Snapshot chainstates should not use in-memory DB as they are loaded from disk
+        if (options.coins_db_in_memory && !options.wipe_chainstate_db && !chainstate->m_from_snapshot_blockhash) {
+            fs::path src_path = chainman.m_options.datadir / "chainstate";
+            LogPrintf("Loading chainstate into memory...\n");
+            auto start = SteadyClock::now();
+            LoadChainstateIntoMemory(chainstate->CoinsDB(), src_path);
+            auto end = SteadyClock::now();
+            std::chrono::duration<double> elapsed = end - start;
+            LogPrintf("Chainstate loaded into memory in %.2fs\n", elapsed.count());
+        }
+#endif
 
         if (options.coins_error_cb) {
             chainstate->CoinsErrorCatcher().AddReadErrCallback(options.coins_error_cb);
@@ -229,12 +256,16 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
 ChainstateLoadResult VerifyLoadedChainstate(ChainstateManager& chainman, const ChainstateLoadOptions& options)
 {
     auto is_coinsview_empty = [&](Chainstate* chainstate) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        // Skip if chainstate not fully initialized (m_coins_views may be null)
+        if (!chainstate->m_coins_views) return true;
         return options.wipe_chainstate_db || chainstate->CoinsTip().GetBestBlock().IsNull();
     };
 
     LOCK(cs_main);
 
     for (Chainstate* chainstate : chainman.GetAll()) {
+        // Skip chainstates that are not fully initialized
+        if (!chainstate->m_coins_views) continue;
         if (!is_coinsview_empty(chainstate)) {
             const CBlockIndex* tip = chainstate->m_chain.Tip();
             if (tip && tip->nTime > GetTime() + MAX_FUTURE_BLOCK_TIME) {

@@ -437,6 +437,25 @@ CDBIterator* CDBWrapper::NewIterator()
     return new CDBIterator{*this, std::make_unique<CDBIterator::IteratorImpl>(DBContext().pdb->NewIterator(DBContext().iteroptions))};
 }
 
+#ifdef ENABLE_INMEMORYCS
+const leveldb::Snapshot* CDBWrapper::GetSnapshot()
+{
+    return DBContext().pdb->GetSnapshot();
+}
+
+void CDBWrapper::ReleaseSnapshot(const leveldb::Snapshot* snapshot)
+{
+    DBContext().pdb->ReleaseSnapshot(snapshot);
+}
+
+CDBIterator* CDBWrapper::NewIterator(const leveldb::ReadOptions& read_options)
+{
+    leveldb::ReadOptions actual_options = DBContext().iteroptions;
+    actual_options.snapshot = read_options.snapshot;
+    return new CDBIterator{*this, std::make_unique<CDBIterator::IteratorImpl>(DBContext().pdb->NewIterator(actual_options))};
+}
+#endif
+
 void CDBIterator::SeekImpl(Span<const std::byte> key)
 {
     leveldb::Slice slKey(CharCast(key.data()), key.size());

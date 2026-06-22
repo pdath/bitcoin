@@ -18,6 +18,8 @@
 #include <optional>
 #include <vector>
 
+class CCoinsViewDB;
+
 class COutPoint;
 class uint256;
 
@@ -61,6 +63,21 @@ public:
 
     //! @returns filesystem path to on-disk storage or std::nullopt if in memory.
     std::optional<fs::path> StoragePath() { return m_db->StoragePath(); }
+
+    //! @returns the underlying CDBWrapper instance.
+    CDBWrapper* GetDB() { return m_db.get(); }
+    const CDBWrapper* GetDB() const { return m_db.get(); }
+
+    //! @returns the database parameters.
+    const DBParams& GetDBParams() const { return m_db_params; }
 };
+
+#ifdef ENABLE_INMEMORYCS
+// Load chainstate from disk LevelDB into memory
+void LoadChainstateIntoMemory(CCoinsViewDB& coins_db, const fs::path& src_path);
+
+// Save chainstate from memory to disk LevelDB
+void SaveChainstateToDisk(CCoinsViewDB& coins_db, const fs::path& dest_path);
+#endif
 
 #endif // BITCOIN_TXDB_H

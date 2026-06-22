@@ -198,6 +198,10 @@ target_link_libraries(bitcoin_common
     $<$<PLATFORM_ID:Windows>:ws2_32>
 )
 
+if(ENABLE_INMEMORYCS)
+    target_compile_definitions(bitcoin_common PRIVATE ENABLE_INMEMORYCS=1)
+endif()
+
 include(InstallBinaryComponent)
 
 if(ENABLE_WALLET)
@@ -337,6 +341,10 @@ target_link_libraries(bitcoin_node
     $<TARGET_NAME_IF_EXISTS:MiniUPnPc::MiniUPnPc>
     $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
+
+if(ENABLE_INMEMORYCS)
+    target_compile_definitions(bitcoin_node PRIVATE ENABLE_INMEMORYCS=1)
+endif()
 
 
 # Bitcoin Core bitcoind.

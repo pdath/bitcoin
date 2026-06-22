@@ -157,6 +157,10 @@ target_link_libraries(test_bitcoin
   libevent::extra
 )
 
+if(ENABLE_INMEMORYCS)
+    target_compile_definitions(test_bitcoin PRIVATE ENABLE_INMEMORYCS=1)
+endif()
+
 if(ENABLE_WALLET)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/wallet/test wallet)
 endif()

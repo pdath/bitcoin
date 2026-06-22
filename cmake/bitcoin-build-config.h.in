@@ -42,6 +42,9 @@
 
 #cmakedefine ENABLE_TOR_SUBPROCESS 1
 
+/* Define if in-memory chainstate mode is enabled */
+#cmakedefine ENABLE_INMEMORYCS 1
+
 /* Define this symbol to build code that uses SSE4.1 intrinsics */
 #cmakedefine ENABLE_SSE41 1
 
