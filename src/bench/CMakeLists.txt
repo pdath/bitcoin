@@ -50,6 +50,7 @@ add_executable(bench_bitcoin
   util_time.cpp
   verify_script.cpp
   xor.cpp
+  bench_univalue_yyjson.cpp
 )
 
 include(TargetDataSources)

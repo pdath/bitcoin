@@ -2,22 +2,64 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://opensource.org/license/mit/.
 
-add_library(univalue STATIC EXCLUDE_FROM_ALL
-  lib/univalue.cpp
-  lib/univalue_get.cpp
-  lib/univalue_read.cpp
-  lib/univalue_write.cpp
+# Define the CMake option (default OFF for backwards compatibility)
+option(WITH_YYJSON "Use yyjson as primary UniValue storage" OFF)
+
+# Conditional library sources based on the CMake option
+if(WITH_YYJSON)
+    # New yyjson-primary implementation
+    enable_language(C)
+    add_library(univalue STATIC EXCLUDE_FROM_ALL
+        lib/univalue_common.cpp
+        lib/univalue_yyjson.cpp
+        lib/univalue_yyjson_read.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/yyjson/yyjson.c
+    )
+    target_compile_definitions(univalue PUBLIC WITH_YYJSON)
+else()
+    # Original implementation (used when WITH_YYJSON=OFF or omitted)
+    add_library(univalue STATIC EXCLUDE_FROM_ALL
+        lib/univalue_common.cpp
+        lib/univalue.cpp
+        lib/univalue_get.cpp
+        lib/univalue_read.cpp
+        lib/univalue_write.cpp
+    )
+endif()
+
+# Always include yyjson headers for both implementations
+target_include_directories(univalue
+    PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/yyjson
 )
+
 target_include_directories(univalue
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_link_libraries(univalue PRIVATE core_interface)
 
+# Platform-specific compiler warnings
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(univalue PRIVATE -Wno-unused-parameter)
+  # Suppress C++-only flag warnings for C files (yyjson.c)
+  if(WITH_YYJSON)
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/yyjson/yyjson.c PROPERTIES
+      COMPILE_OPTIONS "-Wno-overloaded-virtual;-Wno-suggest-override")
+  endif()
+endif()
+
+target_compile_features(univalue PRIVATE cxx_std_17)
+
 if(BUILD_TESTS)
   add_executable(unitester
     test/unitester.cpp
   )
+  if(WITH_YYJSON)
+    target_compile_definitions(unitester PRIVATE WITH_YYJSON)
+    target_include_directories(unitester PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  endif()
   include(TargetDataSources)
   target_json_data_sources(unitester
     test/fail1.json
@@ -86,6 +128,10 @@ if(BUILD_TESTS)
   )
 
   add_executable(object test/object.cpp)
+  if(WITH_YYJSON)
+    target_compile_definitions(object PRIVATE WITH_YYJSON)
+    target_include_directories(object PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  endif()
   target_link_libraries(object
     PRIVATE
       core_interface
