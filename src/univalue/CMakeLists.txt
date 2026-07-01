@@ -140,37 +140,4 @@ if(BUILD_TESTS)
   add_test(NAME univalue_object_test
     COMMAND object
   )
-
-  add_executable(bench_simple test/bench_simple.cpp)
-  if(WITH_YYJSON)
-    target_compile_definitions(bench_simple PRIVATE WITH_YYJSON)
-    target_include_directories(bench_simple PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  endif()
-  target_link_libraries(bench_simple
-    PRIVATE
-      core_interface
-      univalue
-  )
-
-  add_executable(bench_blocktemplate test/bench_blocktemplate.cpp)
-  if(WITH_YYJSON)
-    target_compile_definitions(bench_blocktemplate PRIVATE WITH_YYJSON)
-    target_include_directories(bench_blocktemplate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  endif()
-  target_link_libraries(bench_blocktemplate
-    PRIVATE
-      core_interface
-      univalue
-  )
-
-  add_executable(bench_simple2 test/bench_simple2.cpp)
-  if(WITH_YYJSON)
-    target_compile_definitions(bench_simple2 PRIVATE WITH_YYJSON)
-    target_include_directories(bench_simple2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  endif()
-  target_link_libraries(bench_simple2
-    PRIVATE
-      core_interface
-      univalue
-  )
 endif()
