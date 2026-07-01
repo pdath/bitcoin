@@ -132,45 +132,62 @@ static void setYyjsonRoot(yyjson_mut_doc* doc, yyjson_val* node) {
 }
 
 UniValue::UniValue() : typ(VNULL) {
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_null(m_yyjson_doc.get());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
-    m_materialized = false;
+    // Optimization: Primitives don't need their own yyjson documents
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
+    val.clear();
+    m_materialized = true;  // Primitives are always materialized
 }
 
 UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+    // Optimization: Primitives don't need their own yyjson documents
+    // Only containers (VOBJ, VARR) need documents
+    // For containers, create the document; for primitives, just store in val
     
-    switch (type) {
-        case VNULL:
-            m_yyjson_node = (yyjson_val*)yyjson_mut_null(m_yyjson_doc.get());
-            val.clear();
-            break;
-        case VOBJ:
-            m_yyjson_node = (yyjson_val*)yyjson_mut_obj(m_yyjson_doc.get());
-            // Don't populate val/keys/values for containers
-            break;
-        case VARR:
-            m_yyjson_node = (yyjson_val*)yyjson_mut_arr(m_yyjson_doc.get());
-            // Don't populate val/keys/values for containers
-            break;
-        case VSTR:
-            // Use strncpy to handle embedded nulls correctly
-            m_yyjson_node = (yyjson_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), str.data(), str.size());
-            val = str;  // Store string in val for fast access
-            break;
-        case VNUM:
-            m_yyjson_node = (yyjson_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
-            val = str;  // Store number string in val for fast access
-            break;
-        case VBOOL:
-            m_yyjson_node = (yyjson_val*)yyjson_mut_bool(m_yyjson_doc.get(), str == "1");
-            val = str;  // Store "1" or "0" in val for fast access
-            break;
+    if (type == VOBJ || type == VARR) {
+        m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+        
+        switch (type) {
+            case VOBJ:
+                m_yyjson_node = (yyjson_val*)yyjson_mut_obj(m_yyjson_doc.get());
+                // Don't populate val/keys/values for containers
+                break;
+            case VARR:
+                m_yyjson_node = (yyjson_val*)yyjson_mut_arr(m_yyjson_doc.get());
+                // Don't populate val/keys/values for containers
+                break;
+            default:
+                // Should not happen
+                m_yyjson_node = nullptr;
+                break;
+        }
+        setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+        m_materialized = false;  // Containers are lazily materialized
+    } else {
+        // Primitive types: don't create document
+        m_yyjson_doc = nullptr;
+        m_yyjson_node = nullptr;
+        
+        switch (type) {
+            case VNULL:
+                val.clear();
+                break;
+            case VSTR:
+                val = str;  // Store string in val for fast access
+                break;
+            case VNUM:
+                val = str;  // Store number string in val for fast access
+                break;
+            case VBOOL:
+                val = str;  // Store "1" or "0" in val for fast access
+                break;
+            default:
+                // Should not happen for primitives
+                val.clear();
+                break;
+        }
+        m_materialized = true;  // Primitives are always materialized
     }
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
-    // For primitives, val is populated; for containers, it's empty
-    m_materialized = (type != VARR && type != VOBJ);
 }
 
 UniValue::~UniValue() {}
@@ -187,12 +204,15 @@ UniValue::UniValue(const UniValue& other)
         m_materialized = false;
     }
     
-    // Deep copy the yyjson tree
+    // Deep copy the yyjson tree (for containers and parsed primitives)
+    // For manually constructed primitives, they don't have documents, so just set to null
     if (other.m_yyjson_doc && other.m_yyjson_node) {
+        // Other has a document - deep copy it
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
         m_yyjson_node = (yyjson_val*)copyYyjsonValue(other.m_yyjson_node, m_yyjson_doc.get());
         setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
     } else {
+        // Other doesn't have a document (primitive without doc)
         m_yyjson_doc = nullptr;
         m_yyjson_node = nullptr;
     }
@@ -226,12 +246,13 @@ UniValue& UniValue::operator=(const UniValue& other) {
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
         
-        // Deep copy the yyjson tree
+        // Deep copy the yyjson tree (for containers and parsed primitives)
         if (other.m_yyjson_doc && other.m_yyjson_node) {
             m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
             m_yyjson_node = (yyjson_val*)copyYyjsonValue(other.m_yyjson_node, m_yyjson_doc.get());
             setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
         }
+        // For primitives without documents, m_yyjson_doc and m_yyjson_node stay nullptr
         
         // Clear old container representation (will be lazily materialized if needed)
         keys.clear();
@@ -270,9 +291,10 @@ void UniValue::clear() {
 
 void UniValue::setNull() {
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_null(m_yyjson_doc.get());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    // Optimization: Primitives don't need their own yyjson documents
+    // They will create nodes directly when pushed into containers
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VNULL;
     val.clear();
     m_materialized = true;  // Primitives are always materialized
@@ -280,9 +302,10 @@ void UniValue::setNull() {
 
 void UniValue::setBool(bool val_) {
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_bool(m_yyjson_doc.get(), val_);
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    // Optimization: Primitives don't need their own yyjson documents
+    // They will create nodes directly when pushed into containers
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VBOOL;
     if (val_) {
         val = "1";
@@ -376,9 +399,10 @@ void UniValue::setInt(uint64_t val_) {
     oss << val_;
     std::string str = oss.str();
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    // Optimization: Primitives don't need their own yyjson documents
+    // They will create nodes directly when pushed into containers
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VNUM;
     val = str;  // Store number string for fast access
     m_materialized = true;  // Primitives are always materialized
@@ -389,9 +413,10 @@ void UniValue::setInt(int64_t val_) {
     oss << val_;
     std::string str = oss.str();
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    // Optimization: Primitives don't need their own yyjson documents
+    // They will create nodes directly when pushed into containers
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VNUM;
     val = str;  // Store number string for fast access
     m_materialized = true;  // Primitives are always materialized
@@ -402,9 +427,10 @@ void UniValue::setFloat(double val_) {
     std::ostringstream ss;
     ss << std::setprecision(15) << val_;
     std::string str = ss.str();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    // Optimization: Primitives don't need their own yyjson documents
+    // They will create nodes directly when pushed into containers
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VNUM;
     val = str;  // Store number string for fast access
     m_materialized = true;  // Primitives are always materialized
@@ -412,13 +438,10 @@ void UniValue::setFloat(double val_) {
 
 void UniValue::setStr(std::string str) {
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    // Use strncpy to handle embedded nulls correctly
-    m_yyjson_node = (yyjson_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), str.data(), str.size());
-    if (!m_yyjson_node) {
-        throw std::runtime_error("Failed to create yyjson string node");
-    }
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    // Optimization: Primitives don't need their own yyjson documents
+    // They will create nodes directly when pushed into containers
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VSTR;
     val = str;  // Store string for fast access
     m_materialized = true;  // Primitives are always materialized
@@ -658,12 +681,33 @@ void UniValue::push_back(UniValue val) {
     m_materialized = false;
     
     // Add to yyjson array (primary storage)
-    if (m_yyjson_doc && m_yyjson_node && val.m_yyjson_doc && val.m_yyjson_node) {
-        yyjson_type node_type = yyjson_get_type(m_yyjson_node);
-        if (node_type == YYJSON_TYPE_ARR) {
-            // Copy the yyjson value from val's tree to our tree
+    if (m_yyjson_doc && m_yyjson_node && yyjson_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
+        if (val.m_yyjson_doc && val.m_yyjson_node) {
+            // val has its own yyjson tree - copy it
             yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
             yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val);
+        } else {
+            // Optimization: val is a primitive without its own document
+            // Create yyjson node directly from val's value
+            switch (val.typ) {
+                case VNULL:
+                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, yyjson_mut_null(m_yyjson_doc.get()));
+                    break;
+                case VBOOL:
+                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1"));
+                    break;
+                case VNUM:
+                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    break;
+                case VSTR:
+                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    break;
+                case VOBJ:
+                case VARR:
+                    // Containers should have their own documents - this is an error case
+                    // For now, just skip it
+                    break;
+            }
         }
     }
     // Don't add to old representation - will be materialized on demand from yyjson tree
@@ -683,30 +727,33 @@ void UniValue::pushKV(std::string key, UniValue val) {
         }
         // Add new key-value pair
         yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
-        // For val, we need to handle two cases:
-        // 1. val has a yyjson tree (normal case)
-        // 2. val doesn't have a yyjson tree (fallback to old representation)
+        
+        // Optimization: Handle primitives without documents directly
         if (val.m_yyjson_doc && val.m_yyjson_node) {
+            // val has its own yyjson tree - copy it
             yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
             yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
         } else {
-            // val doesn't have yyjson tree, convert from old representation
-            // This shouldn't happen in normal usage, but handle it
-            if (val.typ == VSTR) {
-                yyjson_mut_val* new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
-                yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
-            } else if (val.typ == VNUM) {
-                yyjson_mut_val* new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
-                yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
-            } else if (val.typ == VBOOL) {
-                yyjson_mut_val* new_val = (yyjson_mut_val*)yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
-                yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
-            } else if (val.typ == VNULL) {
-                yyjson_mut_val* new_val = (yyjson_mut_val*)yyjson_mut_null(m_yyjson_doc.get());
-                yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
-            } else if (val.typ == VARR || val.typ == VOBJ) {
-                // This is an error case - val should have a yyjson tree if it's a container
-                // For now, just skip it
+            // val is a primitive without its own document
+            // Create yyjson node directly from val's value
+            switch (val.typ) {
+                case VNULL:
+                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, yyjson_mut_null(m_yyjson_doc.get()));
+                    break;
+                case VBOOL:
+                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1"));
+                    break;
+                case VNUM:
+                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    break;
+                case VSTR:
+                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    break;
+                case VOBJ:
+                case VARR:
+                    // Containers should have their own documents - this is an error case
+                    // For now, just skip it
+                    break;
             }
         }
     } else {
@@ -849,7 +896,38 @@ std::string UniValue::write(unsigned int prettyIndent, unsigned int /* indentLev
         return val == "1" ? "true" : "false";
     }
     
-    // For VSTR, VOBJ, VARR: use yyjson_mut_write directly for maximum performance
+    // Fast path for VSTR without yyjson document (manually constructed primitive)
+    // Create a temporary document just for this write() call
+    if (typ == VSTR && !m_yyjson_doc && !m_yyjson_node) {
+        // Create a temporary document and node for this primitive
+        // This is still faster than the old approach because we avoid the document-to-document copy
+        // in push_back, and standalone primitives are rare in hot paths
+        yyjson_mut_doc* temp_doc = yyjson_mut_doc_new(nullptr);
+        yyjson_mut_val* temp_node = (yyjson_mut_val*)yyjson_mut_strncpy(temp_doc, val.data(), val.size());
+        yyjson_mut_doc_set_root(temp_doc, temp_node);
+        
+        yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
+        size_t len = 0;
+        char* output = yyjson_mut_write_opts(temp_doc, flags, nullptr, &len, nullptr);
+        std::string result(output, len);
+        free(output);
+        yyjson_mut_doc_free(temp_doc);
+        
+        // Post-process to match UniValue's escaping behavior for DEL (0x7f)
+        std::string final_result;
+        final_result.reserve(result.size() + 10);
+        for (size_t i = 0; i < result.size(); i++) {
+            unsigned char c = result[i];
+            if (c == 0x7f) {
+                final_result += "\\u007f";
+            } else {
+                final_result += c;
+            }
+        }
+        return final_result;
+    }
+    
+    // For VSTR (with document), VOBJ, VARR: use yyjson_mut_write directly for maximum performance
     // yyjson properly handles JSON escaping for control characters 0x00-0x1f
     // but does NOT escape 0x7f (DEL) by default, which UniValue does.
     yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
