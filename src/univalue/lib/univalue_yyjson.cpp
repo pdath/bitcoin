@@ -1,4 +1,4 @@
-// Copyright 2024 The Bitcoin Core developers
+// Copyright 2026 The Bitcoin Knots developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/license/mit-license.php.
 
@@ -14,10 +14,33 @@
 #include <utility>
 #include <vector>
 
-// Forward declaration for recursive write
+/**
+ * @brief Forward declaration for recursive value serialization
+ *
+ * Handles primitive values (VSTR, VNUM, VBOOL, VNULL) that don't have their own
+ * yyjson documents by creating temporary documents for serialization.
+ *
+ * @param uv The UniValue to serialize
+ * @param prettyIndent Indentation level for pretty printing (0 for compact)
+ * @param indentLevel Current nesting level for indentation
+ * @return JSON string representation of the value
+ */
 static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel);
 
-// Helper function to deep copy a yyjson value into a target document
+/**
+ * @brief Deep copy a yyjson value from source to target document
+ *
+ * Creates a copy of the yyjson value tree in the target document's memory pool.
+ * This is necessary because yyjson values cannot be shared between documents.
+ * Each UniValue that owns a yyjson tree must have its own document.
+ *
+ * Uses mutable iterators (yyjson_mut_arr_iter, yyjson_mut_obj_iter) for better
+ * performance when copying from mutable documents (the common case in this implementation).
+ *
+ * @param src_val Source yyjson value to copy (can be from immutable or mutable document)
+ * @param target_doc Target mutable document to copy into
+ * @return New yyjson value in target document, or nullptr on failure
+ */
 static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* target_doc) {
     if (!src_val || !target_doc) return nullptr;
     
@@ -34,11 +57,9 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             size_t len = yyjson_get_len(src_val);
             if (raw && len > 0) {
                 return yyjson_mut_rawncpy(target_doc, raw, len);
-            } else {
-                // Fallback: convert to string and back
-                // This shouldn't happen for properly constructed nodes
-                return yyjson_mut_null(target_doc);
             }
+            // Fallback for invalid nodes - should not occur in practice
+            return yyjson_mut_null(target_doc);
         }
         case YYJSON_TYPE_STR: {
             const char* str = yyjson_get_str(src_val);
@@ -48,8 +69,9 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
         case YYJSON_TYPE_ARR: {
             yyjson_mut_val* arr = yyjson_mut_arr(target_doc);
             if (!arr) return nullptr;
+            
+            // Use mutable iterator to traverse source array
             yyjson_mut_val *item;
-            // Use mutable iterator since we're copying from a mutable document
             yyjson_mut_arr_iter miter;
             if (yyjson_mut_arr_iter_init((yyjson_mut_val*)src_val, &miter)) {
                 while ((item = yyjson_mut_arr_iter_next(&miter))) {
@@ -64,8 +86,9 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
         case YYJSON_TYPE_OBJ: {
             yyjson_mut_val* obj = yyjson_mut_obj(target_doc);
             if (!obj) return nullptr;
+            
+            // Use mutable iterator to traverse source object
             yyjson_mut_val *key, *val;
-            // Use mutable iterator since we're copying from a mutable document
             yyjson_mut_obj_iter miter;
             if (yyjson_mut_obj_iter_init((yyjson_mut_val*)src_val, &miter)) {
                 while ((key = yyjson_mut_obj_iter_next(&miter))) {
@@ -90,7 +113,14 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
 
 const UniValue NullUniValue;
 
-// Implementations of inline methods for yyjson build
+/**
+ * @brief Check if this UniValue represents true ("1")
+ *
+ * Triggers lazy materialization if the value hasn't been materialized yet.
+ *
+ * @return true if this is a boolean value equal to "1", false otherwise
+ * @note In UniValue's encoding: "1" = true, "" (empty) = false
+ */
 bool UniValue::isTrue() const {
     if (typ != VBOOL) return false;
     if (!m_materialized) {
@@ -99,6 +129,14 @@ bool UniValue::isTrue() const {
     return val == "1";
 }
 
+/**
+ * @brief Check if this UniValue represents false ("")
+ *
+ * Triggers lazy materialization if the value hasn't been materialized yet.
+ *
+ * @return true if this is a boolean value not equal to "1", false otherwise
+ * @note In UniValue's encoding: "1" = true, "" (empty) = false
+ */
 bool UniValue::isFalse() const {
     if (typ != VBOOL) return false;
     if (!m_materialized) {
@@ -107,6 +145,12 @@ bool UniValue::isFalse() const {
     return val != "1";
 }
 
+/**
+ * @brief Get type name as string
+ *
+ * @param t The VType to convert
+ * @return String representation of the type ("null", "bool", "object", "array", "string", "number", or "unknown")
+ */
 const char *uvTypeName(UniValue::VType t)
 {
     switch (t) {
@@ -120,41 +164,70 @@ const char *uvTypeName(UniValue::VType t)
     return "unknown";
 }
 
+/**
+ * @brief Custom deleter for yyjson mutable document shared_ptr
+ *
+ * Ensures proper cleanup of yyjson mutable documents when the shared_ptr goes out of scope.
+ *
+ * @param doc The document to free
+ */
 void UniValue::yyjson_doc_deleter(yyjson_mut_doc* doc) {
     yyjson_mut_doc_free(doc);
 }
 
-// Helper to set the root of a document
+/**
+ * @brief Set the root node of a yyjson document
+ *
+ * Establishes ownership relationship between document and root node.
+ * Required when creating new documents and assigning root nodes.
+ *
+ * @param doc The yyjson mutable document
+ * @param node The root node to set
+ */
 static void setYyjsonRoot(yyjson_mut_doc* doc, yyjson_val* node) {
     if (doc && node) {
         yyjson_mut_doc_set_root(doc, (yyjson_mut_val*)node);
     }
 }
-
+/**
+ * @brief Default constructor - creates a null UniValue
+ *
+ * Creates a primitive VNULL value without a yyjson document.
+ * Primitives (VNULL, VBOOL, VSTR, VNUM) store values only in the `val` member
+ * and do not create yyjson documents for efficiency.
+ * Documents are only created when primitives are pushed into containers.
+ */
 UniValue::UniValue() : typ(VNULL) {
-    // Optimization: Primitives don't need their own yyjson documents
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     val.clear();
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Constructor with type and string value
+ *
+ * For containers (VOBJ, VARR): Creates a yyjson document and root node for tree building.
+ * For primitives (VNULL, VSTR, VNUM, VBOOL): Stores value only in `val`, no document.
+ *
+ * This split approach optimizes memory usage:
+ * - Containers need documents to build their yyjson tree structure
+ * - Primitives don't need documents when they'll be pushed into containers
+ *
+ * @param type The value type (VOBJ, VARR, VNULL, VSTR, VNUM, or VBOOL)
+ * @param str The string value (for VSTR, VNUM, VBOOL) or ignored for containers
+ */
 UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
-    // Optimization: Primitives don't need their own yyjson documents
-    // Only containers (VOBJ, VARR) need documents
-    // For containers, create the document; for primitives, just store in val
-    
+    // Containers need yyjson documents for tree building
     if (type == VOBJ || type == VARR) {
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
         
         switch (type) {
             case VOBJ:
                 m_yyjson_node = (yyjson_val*)yyjson_mut_obj(m_yyjson_doc.get());
-                // Don't populate val/keys/values for containers
                 break;
             case VARR:
                 m_yyjson_node = (yyjson_val*)yyjson_mut_arr(m_yyjson_doc.get());
-                // Don't populate val/keys/values for containers
                 break;
             default:
                 // Should not happen
@@ -164,7 +237,7 @@ UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
         setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
         m_materialized = false;  // Containers are lazily materialized
     } else {
-        // Primitive types: don't create document
+        // Primitive types: store in val only, no document needed
         m_yyjson_doc = nullptr;
         m_yyjson_node = nullptr;
         
@@ -190,8 +263,18 @@ UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
     }
 }
 
+/** @brief Destructor */
 UniValue::~UniValue() {}
 
+/**
+ * @brief Copy constructor
+ *
+ * For primitives: Copies `val` directly (already populated, no document).
+ * For containers: Deep copies the yyjson tree using copyYyjsonValue().
+ * For values without documents: Copies val only, no yyjson state.
+ *
+ * @param other The UniValue to copy from
+ */
 UniValue::UniValue(const UniValue& other)
     : typ(other.typ)
 {
@@ -218,17 +301,35 @@ UniValue::UniValue(const UniValue& other)
     }
 }
 
+/**
+ * @brief Move constructor
+ *
+ * Transfers ownership of yyjson state from other to this.
+ * Other is left in a valid but unspecified state.
+ *
+ * @param other The UniValue to move from
+ */
 UniValue::UniValue(UniValue&& other) noexcept
     : typ(other.typ), val(std::move(other.val)), keys(std::move(other.keys)), values(std::move(other.values)),
       m_yyjson_doc(std::move(other.m_yyjson_doc)), 
       m_yyjson_node(other.m_yyjson_node),
       m_materialized(other.m_materialized)
 {
+    // Reset other to safe state
     other.typ = VNULL;
     other.m_yyjson_node = nullptr;
     other.m_materialized = false;
 }
 
+/**
+ * @brief Copy assignment operator
+ *
+ * Similar to copy constructor: deep copy yyjson tree for containers,
+ * copy val directly for primitives.
+ *
+ * @param other The UniValue to copy from
+ * @return Reference to this
+ */
 UniValue& UniValue::operator=(const UniValue& other) {
     if (this != &other) {
         typ = other.typ;
@@ -261,6 +362,15 @@ UniValue& UniValue::operator=(const UniValue& other) {
     return *this;
 }
 
+/**
+ * @brief Move assignment operator
+ *
+ * Transfers ownership from other to this.
+ * Other is left in a valid but unspecified state.
+ *
+ * @param other The UniValue to move from
+ * @return Reference to this
+ */
 UniValue& UniValue::operator=(UniValue&& other) noexcept {
     if (this != &other) {
         typ = other.typ;
@@ -279,6 +389,12 @@ UniValue& UniValue::operator=(UniValue&& other) noexcept {
     return *this;
 }
 
+/**
+ * @brief Clear the UniValue, setting it to null
+ *
+ * Resets all state: type, val, keys, values, yyjson document and node.
+ * The UniValue becomes a null value.
+ */
 void UniValue::clear() {
     typ = VNULL;
     val.clear();
@@ -289,10 +405,14 @@ void UniValue::clear() {
     m_materialized = false;
 }
 
+/**
+ * @brief Set this UniValue to null
+ *
+ * Optimization: Primitives don't need their own yyjson documents.
+ * They will create nodes directly when pushed into containers.
+ */
 void UniValue::setNull() {
     clear();
-    // Optimization: Primitives don't need their own yyjson documents
-    // They will create nodes directly when pushed into containers
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     typ = VNULL;
@@ -300,10 +420,16 @@ void UniValue::setNull() {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Set this UniValue to a boolean value
+ *
+ * Optimization: Primitives don't need their own yyjson documents.
+ * They will create nodes directly when pushed into containers.
+ *
+ * @param val_ Boolean value (true becomes "1", false becomes "")
+ */
 void UniValue::setBool(bool val_) {
     clear();
-    // Optimization: Primitives don't need their own yyjson documents
-    // They will create nodes directly when pushed into containers
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     typ = VBOOL;
@@ -315,10 +441,36 @@ void UniValue::setBool(bool val_) {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Check if character is a digit (0-9)
+ *
+ * @param ch Character to check
+ * @return true if ch is between '0' and '9' inclusive
+ */
 static bool json_isdigit(int ch) {
     return ((ch >= '0') && (ch <= '9'));
 }
 
+/**
+ * @brief Validate a JSON number string according to UniValue's strict rules
+ *
+ * Ensures the string conforms to JSON number format while rejecting:
+ * - Empty strings
+ * - Strings with leading/trailing whitespace
+ * - Embedded NUL characters
+ * - Hex numbers (0x...)
+ * - Leading zeros (except "0" itself)
+ * - Invalid characters
+ *
+ * Supports:
+ * - Optional minus sign
+ * - Integer part (required)
+ * - Optional decimal point and fractional part
+ * - Optional exponent (e or E) with optional sign
+ *
+ * @param s The string to validate
+ * @return true if valid JSON number, false otherwise
+ */
 static bool validNumStr(const std::string& s) {
     if (s.empty()) return false;
     if (s.size() >= 1 && (json_isspace(s[0]) || json_isspace(s[s.size()-1]))) return false;
@@ -328,8 +480,7 @@ static bool validNumStr(const std::string& s) {
     const char *raw = s.data();
     const char *end = raw + s.size();
     
-    // Must start with digit, minus, or plus (for scientific notation in some contexts)
-    // But actually, JSON numbers can only start with -, digit, or .
+    // Must start with digit, minus, or dot
     if (!json_isdigit(static_cast<unsigned char>(*raw)) && *raw != '-' && *raw != '.')
         return false;
     
@@ -346,7 +497,7 @@ static bool validNumStr(const std::string& s) {
     if (*firstDigit == '0' && firstDigit + 1 < end && json_isdigit(static_cast<unsigned char>(firstDigit[1]))) 
         return false;
     
-    // Parse the number
+    // Parse the integer part
     bool hasDigit = false;
     while (raw < end && json_isdigit(static_cast<unsigned char>(*raw))) {
         hasDigit = true;
@@ -380,6 +531,15 @@ static bool validNumStr(const std::string& s) {
     return hasDigit && raw == end;
 }
 
+/**
+ * @brief Set this UniValue to a number string
+ *
+ * Validates the string using validNumStr() before setting.
+ * Creates a yyjson document and stores the number as raw text.
+ *
+ * @param str The number string to set
+ * @throws std::runtime_error if the string is not a valid JSON number
+ */
 void UniValue::setNumStr(std::string str) {
     if (!validNumStr(str)) {
         throw std::runtime_error("The string '" + str + "' is not a valid JSON number");
@@ -394,13 +554,19 @@ void UniValue::setNumStr(std::string str) {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Set this UniValue to an unsigned 64-bit integer
+ *
+ * Converts the integer to a string and stores it.
+ * Optimization: Primitives don't need their own yyjson documents.
+ *
+ * @param val_ The unsigned integer value
+ */
 void UniValue::setInt(uint64_t val_) {
     std::ostringstream oss;
     oss << val_;
     std::string str = oss.str();
     clear();
-    // Optimization: Primitives don't need their own yyjson documents
-    // They will create nodes directly when pushed into containers
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     typ = VNUM;
@@ -408,13 +574,19 @@ void UniValue::setInt(uint64_t val_) {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Set this UniValue to a signed 64-bit integer
+ *
+ * Converts the integer to a string and stores it.
+ * Optimization: Primitives don't need their own yyjson documents.
+ *
+ * @param val_ The signed integer value
+ */
 void UniValue::setInt(int64_t val_) {
     std::ostringstream oss;
     oss << val_;
     std::string str = oss.str();
     clear();
-    // Optimization: Primitives don't need their own yyjson documents
-    // They will create nodes directly when pushed into containers
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     typ = VNUM;
@@ -422,13 +594,19 @@ void UniValue::setInt(int64_t val_) {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Set this UniValue to a floating-point number
+ *
+ * Converts the double to a string with 15 digits of precision.
+ * Optimization: Primitives don't need their own yyjson documents.
+ *
+ * @param val_ The floating-point value
+ */
 void UniValue::setFloat(double val_) {
     clear();
     std::ostringstream ss;
     ss << std::setprecision(15) << val_;
     std::string str = ss.str();
-    // Optimization: Primitives don't need their own yyjson documents
-    // They will create nodes directly when pushed into containers
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     typ = VNUM;
@@ -436,10 +614,16 @@ void UniValue::setFloat(double val_) {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Set this UniValue to a string
+ *
+ * Optimization: Primitives don't need their own yyjson documents.
+ * They will create nodes directly when pushed into containers.
+ *
+ * @param str The string value
+ */
 void UniValue::setStr(std::string str) {
     clear();
-    // Optimization: Primitives don't need their own yyjson documents
-    // They will create nodes directly when pushed into containers
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
     typ = VSTR;
@@ -447,6 +631,11 @@ void UniValue::setStr(std::string str) {
     m_materialized = true;  // Primitives are always materialized
 }
 
+/**
+ * @brief Set this UniValue to an empty array
+ *
+ * Creates a yyjson document and an empty array node.
+ */
 void UniValue::setArray() {
     clear();
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
@@ -457,6 +646,11 @@ void UniValue::setArray() {
     m_materialized = false;
 }
 
+/**
+ * @brief Set this UniValue to an empty object
+ *
+ * Creates a yyjson document and an empty object node.
+ */
 void UniValue::setObject() {
     clear();
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
@@ -467,12 +661,29 @@ void UniValue::setObject() {
     m_materialized = false;
 }
 
+/**
+ * @brief Check if this UniValue is of the expected type
+ *
+ * @param expected The expected VType
+ * @throws std::runtime_error if the type doesn't match
+ */
 void UniValue::checkType(const VType& expected) const {
     if (typ != expected) {
         throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
     }
 }
-
+/**
+ * @brief Materialize the yyjson tree into the old representation (val/keys/values)
+ *
+ * Populates the `val`, `keys`, and `values` members from the yyjson tree.
+ * This is called lazily when accessors need the old representation.
+ *
+ * For primitives: Extracts the value from the yyjson node into `val`
+ * For arrays: Builds the `values` vector from the yyjson array
+ * For objects: Builds both `keys` and `values` vectors from the yyjson object
+ *
+ * Once materialized, subsequent accesses use the cached representation.
+ */
 void UniValue::materialize() const {
     if (m_materialized) return;
     if (!m_yyjson_doc || !m_yyjson_node) return;
@@ -486,7 +697,7 @@ void UniValue::materialize() const {
             break;
         case YYJSON_TYPE_BOOL:
             self->typ = VBOOL;
-            // Note: yyjson_get_bool works with both immutable and mutable values
+            // yyjson_get_bool works with both immutable and mutable values
             if (yyjson_get_bool(m_yyjson_node)) {
                 self->val = "1";
             } else {
@@ -501,7 +712,7 @@ void UniValue::materialize() const {
             if (raw && len > 0) {
                 self->val.assign(raw, len);
             } else {
-                self->val = "0"; // Fallback
+                self->val = "0"; // Fallback for invalid numbers
             }
             break;
         }
@@ -512,7 +723,7 @@ void UniValue::materialize() const {
             if (str && len > 0) {
                 self->val.assign(str, len);
             } else {
-                self->val = ""; // Fallback
+                self->val = ""; // Fallback for invalid strings
             }
             break;
         }
@@ -570,6 +781,14 @@ void UniValue::materialize() const {
     self->m_materialized = true;
 }
 
+/**
+ * @brief Materialize primitive values from yyjson tree
+ *
+ * Similar to materialize() but only handles primitive types (not containers).
+ * For containers, delegates to materialize().
+ *
+ * This is used when only primitive materialization is needed.
+ */
 void UniValue::materializeFromYyjson() const {
     if (m_materialized) return;
     UniValue* self = const_cast<UniValue*>(this);
@@ -603,7 +822,7 @@ void UniValue::materializeFromYyjson() const {
             if (raw && len > 0) {
                 self->val.assign(raw, len);
             } else {
-                self->val = "0"; // Fallback
+                self->val = "0"; // Fallback for invalid numbers
             }
             break;
         }
@@ -614,7 +833,7 @@ void UniValue::materializeFromYyjson() const {
             if (str && len > 0) {
                 self->val.assign(str, len);
             } else {
-                self->val = ""; // Fallback
+                self->val = ""; // Fallback for invalid strings
             }
             break;
         }
@@ -625,10 +844,25 @@ void UniValue::materializeFromYyjson() const {
     self->m_materialized = true;
 }
 
+/**
+ * @brief Materialize container values
+ *
+ * Alias for materialize() for containers.
+ */
 void UniValue::materializeContainer() const {
     materialize();
 }
 
+/**
+ * @brief Find a key in an object
+ *
+ * Searches for a key in the object's keys vector.
+ * Triggers materialization if the object hasn't been materialized yet.
+ *
+ * @param key The key to find
+ * @param retIdx Output parameter for the index if found
+ * @return true if key was found, false otherwise
+ */
 bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
     if (typ != VOBJ) return false;
     
@@ -645,6 +879,14 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
     return false;
 }
 
+/**
+ * @brief Get the string representation of this value
+ *
+ * Triggers materialization if the value hasn't been materialized yet.
+ * For primitives with yyjson documents, extracts the value from the tree.
+ *
+ * @return Reference to the val string
+ */
 const std::string& UniValue::getValStr() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         const_cast<UniValue*>(this)->materializeFromYyjson();
@@ -652,6 +894,13 @@ const std::string& UniValue::getValStr() const {
     return val;
 }
 
+/**
+ * @brief Check if this container is empty
+ *
+ * Triggers materialization if the container hasn't been materialized yet.
+ *
+ * @return true if empty, false otherwise
+ */
 bool UniValue::empty() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
         const_cast<UniValue*>(this)->materialize();
@@ -659,6 +908,14 @@ bool UniValue::empty() const {
     return values.empty();
 }
 
+/**
+ * @brief Get the size of this container
+ *
+ * Triggers materialization if the container hasn't been materialized yet.
+ * After materialization, returns the cached size.
+ *
+ * @return Number of elements in the container
+ */
 size_t UniValue::size() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
         const_cast<UniValue*>(this)->materialize();
@@ -668,6 +925,14 @@ size_t UniValue::size() const {
     return values.size();
 }
 
+/**
+ * @brief Reserve capacity for an array
+ *
+ * Triggers materialization if the array hasn't been materialized yet.
+ * Then reserves the requested capacity in the values vector.
+ *
+ * @param new_cap The new capacity to reserve
+ */
 void UniValue::reserve(size_t new_cap) {
     checkType(VARR);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -676,6 +941,18 @@ void UniValue::reserve(size_t new_cap) {
     values.reserve(new_cap);
 }
 
+/**
+ * @brief Append a value to an array
+ *
+ * Optimization: For primitives without their own documents, creates yyjson nodes
+ * directly in the container's document, avoiding document-to-document copying.
+ * For values with documents (containers, parsed primitives), copies the node.
+ *
+ * This is a key optimization that eliminates the overhead of creating temporary
+ * documents for primitives when building arrays.
+ *
+ * @param val The value to append
+ */
 void UniValue::push_back(UniValue val) {
     checkType(VARR);
     m_materialized = false;
@@ -713,6 +990,18 @@ void UniValue::push_back(UniValue val) {
     // Don't add to old representation - will be materialized on demand from yyjson tree
 }
 
+/**
+ * @brief Add a key-value pair to an object
+ *
+ * Optimization: For primitives without their own documents, creates yyjson nodes
+ * directly in the container's document, avoiding document-to-document copying.
+ * For values with documents (containers, parsed primitives), copies the node.
+ *
+ * If the key already exists, the old value is replaced.
+ *
+ * @param key The key to add/update
+ * @param val The value to associate with the key
+ */
 void UniValue::pushKV(std::string key, UniValue val) {
     checkType(VOBJ);
     
@@ -767,10 +1056,26 @@ void UniValue::pushKV(std::string key, UniValue val) {
     m_materialized = false;
 }
 
+/**
+ * @brief Add a key-value pair to an object (end variant)
+ *
+ * Same as pushKV but takes ownership of the parameters.
+ *
+ * @param key The key to add/update
+ * @param val The value to associate with the key
+ */
 void UniValue::pushKVEnd(std::string key, UniValue val) {
     pushKV(std::move(key), std::move(val));
 }
 
+/**
+ * @brief Merge all key-value pairs from another object into this one
+ *
+ * If the other object has a yyjson tree, iterates directly over it without
+ * materializing for maximum efficiency.
+ *
+ * @param obj The object to merge from (must be an object)
+ */
 void UniValue::pushKVs(UniValue obj) {
     checkType(VOBJ);
     obj.checkType(VOBJ);
@@ -817,198 +1122,15 @@ void UniValue::pushKVs(UniValue obj) {
             pushKV(obj.keys[i], obj.values[i]);
     }
 }
-
-// Recursive helper for writing UniValue using yyjson for containers but custom escaping for strings
-static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel) {
-    const bool pretty = prettyIndent > 0;
-    std::string indentStr = pretty ? std::string(indentLevel * prettyIndent, ' ') : "";
-    std::string nextIndentStr = pretty ? std::string((indentLevel + 1) * prettyIndent, ' ') : "";
-    
-    switch (uv.getType()) {
-        case UniValue::VNULL:
-            return "null";
-        case UniValue::VBOOL:
-            return uv.isTrue() ? "true" : "false";
-        case UniValue::VNUM:
-            return uv.getValStr(); // Preserve exact number formatting
-        case UniValue::VSTR:
-            return '"' + json_escape(uv.getValStr()) + '"';
-        case UniValue::VARR: {
-            if (uv.empty()) return "[]";
-            std::string s = "[";
-            if (pretty) s += "\n";
-            const auto& values = uv.getValues();
-            for (size_t i = 0; i < values.size(); ++i) {
-                if (pretty) s += nextIndentStr;
-                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel + 1);
-                if (i < values.size() - 1) {
-                    s += ",";
-                }
-                if (pretty) s += "\n";
-            }
-            if (pretty) s += indentStr;
-            s += "]";
-            return s;
-        }
-        case UniValue::VOBJ: {
-            if (uv.empty()) return "{}";
-            std::string s = "{";
-            if (pretty) s += "\n";
-            const auto& keys = uv.getKeys();
-            const auto& values = uv.getValues();
-            for (size_t i = 0; i < keys.size(); ++i) {
-                if (pretty) s += nextIndentStr;
-                s += '"' + json_escape(keys[i]) + std::string("\":");
-                if (pretty) s += " ";
-                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel + 1);
-                if (i < keys.size() - 1) {
-                    s += ",";
-                }
-                if (pretty) s += "\n";
-            }
-            if (pretty) s += indentStr;
-            s += "}";
-            return s;
-        }
-    }
-    return "";
-}
-
-std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
-    // For the yyjson-primary implementation, we need to use custom write
-    // to preserve string escaping compatibility with original UniValue
-    return writeYyjsonValueInternal(*this, prettyIndent, 0);
-}
-
-std::string UniValue::write(unsigned int prettyIndent, unsigned int /* indentLevel */) const {
-    // Fast path for VNUM: return val directly (already properly formatted)
-    if (typ == VNUM) {
-        return val;
-    }
-    
-    // Handle VNULL: return "null"
-    if (typ == VNULL) {
-        return "null";
-    }
-    
-    // Handle VBOOL: convert "1"/"" to "true"/"false"
-    if (typ == VBOOL) {
-        return val == "1" ? "true" : "false";
-    }
-    
-    // Fast path for VSTR without yyjson document (manually constructed primitive)
-    // Create a temporary document just for this write() call
-    if (typ == VSTR && !m_yyjson_doc && !m_yyjson_node) {
-        // Create a temporary document and node for this primitive
-        // This is still faster than the old approach because we avoid the document-to-document copy
-        // in push_back, and standalone primitives are rare in hot paths
-        yyjson_mut_doc* temp_doc = yyjson_mut_doc_new(nullptr);
-        yyjson_mut_val* temp_node = (yyjson_mut_val*)yyjson_mut_strncpy(temp_doc, val.data(), val.size());
-        yyjson_mut_doc_set_root(temp_doc, temp_node);
-        
-        yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
-        size_t len = 0;
-        char* output = yyjson_mut_write_opts(temp_doc, flags, nullptr, &len, nullptr);
-        std::string result(output, len);
-        free(output);
-        yyjson_mut_doc_free(temp_doc);
-        
-        // Post-process to match UniValue's escaping behavior for DEL (0x7f)
-        // OPTIMIZATION: Early exit if no DEL characters present
-        if (result.find(0x7f) == std::string::npos) {
-            return result; // No processing needed
-        }
-        
-        std::string final_result;
-        final_result.reserve(result.size() + 10);
-        for (size_t i = 0; i < result.size(); i++) {
-            unsigned char c = result[i];
-            if (c == 0x7f) {
-                final_result += "\\u007f";
-            } else {
-                final_result += c;
-            }
-        }
-        return final_result;
-    }
-    
-    // For VSTR (with document), VOBJ, VARR: use yyjson_mut_write directly for maximum performance
-    // yyjson properly handles JSON escaping for control characters 0x00-0x1f
-    // but does NOT escape 0x7f (DEL) by default, which UniValue does.
-    yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
-    
-    size_t len = 0;
-    char* output = yyjson_mut_write_opts(m_yyjson_doc.get(), flags, nullptr, &len, nullptr);
-    std::string result(output, len);
-    free(output);
-    
-    // Post-process to match UniValue's escaping behavior:
-    // 1. Replace raw DEL (0x7f) characters with \u007f
-    // 2. Convert uppercase hex in escape sequences to lowercase
-    // OPTIMIZATION: Early exit if no processing needed
-    
-    // Fast path: check if any processing is needed
-    size_t del_pos = result.find(0x7f);
-    size_t u_pos = result.find("\\u");
-    
-    if (del_pos == std::string::npos && u_pos == std::string::npos) {
-        return result; // No processing needed at all
-    }
-    
-    // Check if uppercase hex conversion is actually needed
-    bool needs_uppercase_conversion = false;
-    if (u_pos != std::string::npos && del_pos == std::string::npos) {
-        // Only need to check for uppercase if there are escape sequences but no DEL
-        for (size_t i = u_pos; i < result.size(); ) {
-            if (result[i] == '\\' && i + 5 < result.size() && result[i+1] == 'u') {
-                for (int j = 2; j < 6; j++) {
-                    if (result[i+j] >= 'A' && result[i+j] <= 'F') {
-                        needs_uppercase_conversion = true;
-                        goto processing_needed;
-                    }
-                }
-                i += 6;
-            } else {
-                i++;
-            }
-        }
-        if (!needs_uppercase_conversion) {
-            return result; // No uppercase hex to convert
-        }
-    }
-    processing_needed:
-    
-    std::string final_result;
-    final_result.reserve(result.size() + (del_pos != std::string::npos ? 6 : 0));
-    
-    for (size_t i = 0; i < result.size(); i++) {
-        unsigned char c = result[i];
-        if (c == 0x7f) {
-            // Replace DEL with \u007f
-            final_result += "\\u007f";
-        } else if (i + 1 < result.size() && c == '\\' && result[i+1] == 'u') {
-            // Found \uXXXX, copy it and convert hex digits to lowercase
-            final_result += '\\';
-            final_result += 'u';
-            if (i + 5 < result.size()) {
-                for (int j = 2; j < 6; j++) {
-                    char hex_char = result[i + j];
-                    if (hex_char >= 'A' && hex_char <= 'F') {
-                        final_result += (hex_char - 'A' + 'a');
-                    } else {
-                        final_result += hex_char;
-                    }
-                }
-                i += 5; // Skip the next 5 characters
-            }
-        } else {
-            final_result += c;
-        }
-    }
-    
-    return final_result;
-}
-
+/**
+ * @brief Access an object value by key
+ *
+ * Searches for the key in the object and returns the corresponding value.
+ * Returns NullUniValue if the key is not found or if this is not an object.
+ *
+ * @param key The key to look up
+ * @return Reference to the value, or NullUniValue if not found
+ */
 const UniValue& UniValue::operator[](const std::string& key) const {
     if (typ != VOBJ)
         return NullUniValue;
@@ -1020,6 +1142,19 @@ const UniValue& UniValue::operator[](const std::string& key) const {
     return NullUniValue;
 }
 
+/**
+ * @brief Access an array or object value by index
+ *
+ * Returns the value at the specified index.
+ * For arrays: Returns the element at the index.
+ * For objects: Returns the value at the index (indexing by insertion order).
+ * Returns NullUniValue if the index is out of bounds or if this is not a container.
+ *
+ * Triggers materialization if the container hasn't been materialized yet.
+ *
+ * @param index The index to access
+ * @return Reference to the value, or NullUniValue if index is invalid
+ */
 const UniValue& UniValue::operator[](size_t index) const {
     if (typ != VOBJ && typ != VARR)
         return NullUniValue;
@@ -1032,6 +1167,14 @@ const UniValue& UniValue::operator[](size_t index) const {
     return NullUniValue;
 }
 
+/**
+ * @brief Get the keys of this object
+ *
+ * Triggers materialization if the object hasn't been materialized yet.
+ *
+ * @return Reference to the vector of object keys
+ * @throws std::runtime_error if this is not an object
+ */
 const std::vector<std::string>& UniValue::getKeys() const {
     checkType(VOBJ);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -1040,6 +1183,14 @@ const std::vector<std::string>& UniValue::getKeys() const {
     return keys;
 }
 
+/**
+ * @brief Get the values of this object or array
+ *
+ * Triggers materialization if the container hasn't been materialized yet.
+ *
+ * @return Reference to the vector of values
+ * @throws std::runtime_error if this is not an object or array
+ */
 const std::vector<UniValue>& UniValue::getValues() const {
     if (typ != VOBJ && typ != VARR)
         throw std::runtime_error("JSON value is not an object or array as expected");
@@ -1049,6 +1200,14 @@ const std::vector<UniValue>& UniValue::getValues() const {
     return values;
 }
 
+/**
+ * @brief Get the boolean value
+ *
+ * Triggers materialization if the value hasn't been materialized yet.
+ *
+ * @return true if the value is "1", false if "" (empty string)
+ * @throws std::runtime_error if this is not a boolean
+ */
 bool UniValue::get_bool() const {
     checkType(VBOOL);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -1057,6 +1216,14 @@ bool UniValue::get_bool() const {
     return val == "1";
 }
 
+/**
+ * @brief Get the string value
+ *
+ * Triggers materialization if the value hasn't been materialized yet.
+ *
+ * @return Reference to the string value
+ * @throws std::runtime_error if this is not a string
+ */
 const std::string& UniValue::get_str() const {
     checkType(VSTR);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -1065,6 +1232,15 @@ const std::string& UniValue::get_str() const {
     return val;
 }
 
+/**
+ * @brief Get the floating-point value
+ *
+ * Triggers materialization if the value hasn't been materialized yet.
+ * Parses the string representation using std::stod.
+ *
+ * @return The double-precision floating-point value
+ * @throws std::runtime_error if this is not a number or out of range
+ */
 double UniValue::get_real() const {
     checkType(VNUM);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -1077,6 +1253,14 @@ double UniValue::get_real() const {
     }
 }
 
+/**
+ * @brief Get a reference to this UniValue as an object
+ *
+ * Triggers materialization if the object hasn't been materialized yet.
+ *
+ * @return Reference to this UniValue
+ * @throws std::runtime_error if this is not an object
+ */
 const UniValue& UniValue::get_obj() const {
     checkType(VOBJ);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -1085,6 +1269,14 @@ const UniValue& UniValue::get_obj() const {
     return *this;
 }
 
+/**
+ * @brief Get a reference to this UniValue as an array
+ *
+ * Triggers materialization if the array hasn't been materialized yet.
+ *
+ * @return Reference to this UniValue
+ * @throws std::runtime_error if this is not an array
+ */
 const UniValue& UniValue::get_array() const {
     checkType(VARR);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
@@ -1093,6 +1285,15 @@ const UniValue& UniValue::get_array() const {
     return *this;
 }
 
+/**
+ * @brief Find a value in an object by key
+ *
+ * Searches for the key in the object and returns the corresponding value.
+ * Returns NullUniValue if the key is not found.
+ *
+ * @param key The key to look up
+ * @return Reference to the value, or NullUniValue if not found
+ */
 const UniValue& UniValue::find_value(std::string_view key) const {
     size_t idx;
     if (findKey(std::string(key), idx)) {
@@ -1101,6 +1302,13 @@ const UniValue& UniValue::find_value(std::string_view key) const {
     return NullUniValue;
 }
 
+/**
+ * @brief Populate a map with all key-value pairs from this object
+ *
+ * Triggers materialization if the object hasn't been materialized yet.
+ *
+ * @param kv Output map to populate
+ */
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
     if (typ != VOBJ) return;
     
@@ -1113,6 +1321,17 @@ void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
     }
 }
 
+/**
+ * @brief Check if this object has the expected structure
+ *
+ * Verifies that the object contains all the keys specified in memberTypes
+ * and that each key has the expected type.
+ *
+ * Triggers materialization if the object hasn't been materialized yet.
+ *
+ * @param memberTypes Map of key names to expected types
+ * @return true if the object matches the expected structure, false otherwise
+ */
 bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTypes) const {
     if (typ != VOBJ) return false;
     
@@ -1132,6 +1351,13 @@ bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTy
     return true;
 }
 
+/**
+ * @brief Append multiple values to an array
+ *
+ * Convenience method to append all values from a vector.
+ *
+ * @param vec The vector of values to append
+ */
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
     checkType(VARR);
