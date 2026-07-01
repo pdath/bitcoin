@@ -12,6 +12,62 @@
 // Maximum JSON depth allowed (512 container levels)
 static constexpr size_t MAX_JSON_DEPTH = 512;
 
+// Helper function to deep copy a yyjson value into a target document
+// Note: This function is duplicated in univalue_yyjson.cpp to avoid header dependencies
+static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* target_doc) {
+    if (!src_val) return nullptr;
+    
+    yyjson_type type = yyjson_get_type(src_val);
+    
+    switch (type) {
+        case YYJSON_TYPE_NULL:
+            return yyjson_mut_null(target_doc);
+        case YYJSON_TYPE_BOOL:
+            return yyjson_mut_bool(target_doc, yyjson_get_bool(src_val));
+        case YYJSON_TYPE_NUM:
+        case YYJSON_TYPE_RAW: {
+            const char* raw = yyjson_get_raw(src_val);
+            size_t len = yyjson_get_len(src_val);
+            if (raw && len > 0) {
+                return yyjson_mut_rawncpy(target_doc, raw, len);
+            } else {
+                return yyjson_mut_null(target_doc);
+            }
+        }
+        case YYJSON_TYPE_STR: {
+            const char* str = yyjson_get_str(src_val);
+            size_t len = yyjson_get_len(src_val);
+            return yyjson_mut_strncpy(target_doc, str, len);
+        }
+        case YYJSON_TYPE_ARR: {
+            yyjson_mut_val* arr = yyjson_mut_arr(target_doc);
+            size_t idx, max;
+            yyjson_val *item;
+            yyjson_arr_foreach(src_val, idx, max, item) {
+                yyjson_mut_arr_append(arr, copyYyjsonValue(item, target_doc));
+            }
+            return arr;
+        }
+        case YYJSON_TYPE_OBJ: {
+            yyjson_mut_val* obj = yyjson_mut_obj(target_doc);
+            yyjson_val *key, *val;
+            yyjson_obj_iter iter;
+            yyjson_obj_iter_init(src_val, &iter);
+            while ((key = yyjson_obj_iter_next(&iter))) {
+                val = yyjson_obj_iter_get_val(key);
+                const char* kstr = yyjson_get_str(key);
+                size_t klen = yyjson_get_len(key);
+                yyjson_mut_val* new_key = yyjson_mut_strncpy(target_doc, kstr, klen);
+                yyjson_mut_val* new_val = copyYyjsonValue(val, target_doc);
+                yyjson_mut_obj_add(obj, new_key, new_val);
+            }
+            return obj;
+        }
+        default:
+            return nullptr;
+    }
+}
+
 // Helper function to calculate maximum nesting depth
 static size_t getMaxDepth(yyjson_val* val) {
     if (!val) return 0;
@@ -122,11 +178,18 @@ bool UniValue::read(std::string_view str_in) {
         return false;
     }
     
+    // yyjson_read returns an immutable doc, but we need a mutable doc for consistency
+    // Create a new mutable document and copy the tree
+    yyjson_mut_doc* mut_doc = yyjson_mut_doc_new(nullptr);
+    yyjson_mut_val* mut_root = copyYyjsonValue(root, mut_doc);
+    yyjson_mut_doc_set_root(mut_doc, mut_root);
+    
     // Store document with automatic cleanup using shared_ptr
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>((yyjson_mut_doc*)doc, [](yyjson_mut_doc* d) {
-        yyjson_doc_free((yyjson_doc*)d);
-    });
-    m_yyjson_node = (yyjson_val*)root;
+    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(mut_doc, yyjson_doc_deleter);
+    m_yyjson_node = (yyjson_val*)mut_root;
+    
+    // Free the immutable document from yyjson_read
+    yyjson_doc_free(doc);
     
     // Set the type based on the root value
     switch (yyjson_get_type(m_yyjson_node)) {
