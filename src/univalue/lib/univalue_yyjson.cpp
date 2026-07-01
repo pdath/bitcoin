@@ -733,6 +733,10 @@ void UniValue::materialize() const {
                 // Clear old representation
                 self->values.clear();
                 
+                // Optimization: Pre-allocate capacity to avoid reallocations
+                size_t arr_size = yyjson_arr_size(self->m_yyjson_node);
+                self->values.reserve(arr_size);
+                
                 size_t idx, max;
                 yyjson_mut_val *item;
                 // Use mutable foreach for mutable documents
@@ -752,6 +756,11 @@ void UniValue::materialize() const {
                 // Clear old representation
                 self->keys.clear();
                 self->values.clear();
+                
+                // Optimization: Pre-allocate capacity to avoid reallocations
+                size_t obj_size = yyjson_obj_size(self->m_yyjson_node);
+                self->keys.reserve(obj_size);
+                self->values.reserve(obj_size);
                 
                 // Use mutable iterator for mutable documents
                 yyjson_mut_val *key, *v;
