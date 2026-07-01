@@ -850,38 +850,47 @@ std::string UniValue::write(unsigned int prettyIndent, unsigned int /* indentLev
     }
     
     // For VSTR, VOBJ, VARR: use yyjson_mut_write directly for maximum performance
-    // yyjson properly handles JSON escaping including control characters
+    // yyjson properly handles JSON escaping for control characters 0x00-0x1f
+    // but does NOT escape 0x7f (DEL) by default, which UniValue does.
     yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
-    // Use YYJSON_WRITE_ESCAPE_UNICODE to ensure consistent escaping format
-    flags |= YYJSON_WRITE_ESCAPE_UNICODE;
     
     size_t len = 0;
     char* output = yyjson_mut_write_opts(m_yyjson_doc.get(), flags, nullptr, &len, nullptr);
     std::string result(output, len);
     free(output);
     
-    // Convert uppercase unicode escapes to lowercase to match UniValue's behavior
-    // UniValue uses lowercase hex in escapes (\u00xx not \u00XX)
-    for (size_t i = 0; i < result.size(); ) {
-        if (i + 1 < result.size() && result[i] == '\\' && result[i+1] == 'u') {
-            // Found \uXXXX, convert hex digits to lowercase
+    // Post-process to match UniValue's escaping behavior:
+    // 1. Replace raw DEL (0x7f) characters with \u007f
+    // 2. Convert uppercase hex in escape sequences to lowercase
+    std::string final_result;
+    final_result.reserve(result.size() + 10); // Reserve extra space for potential escapes
+    
+    for (size_t i = 0; i < result.size(); i++) {
+        unsigned char c = result[i];
+        if (c == 0x7f) {
+            // Replace DEL with \u007f
+            final_result += "\\u007f";
+        } else if (i + 1 < result.size() && c == '\\' && result[i+1] == 'u') {
+            // Found \uXXXX, copy it and convert hex digits to lowercase
+            final_result += '\\';
+            final_result += 'u';
             if (i + 5 < result.size()) {
                 for (int j = 2; j < 6; j++) {
-                    char c = result[i + j];
-                    if (c >= 'A' && c <= 'F') {
-                        result[i + j] = c - 'A' + 'a';
+                    char hex_char = result[i + j];
+                    if (hex_char >= 'A' && hex_char <= 'F') {
+                        final_result += (hex_char - 'A' + 'a');
+                    } else {
+                        final_result += hex_char;
                     }
                 }
-                i += 6;
-            } else {
-                i++;
+                i += 5; // Skip the next 5 characters
             }
         } else {
-            i++;
+            final_result += c;
         }
     }
     
-    return result;
+    return final_result;
 }
 
 const UniValue& UniValue::operator[](const std::string& key) const {
