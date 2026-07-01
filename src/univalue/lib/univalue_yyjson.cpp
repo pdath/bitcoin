@@ -914,6 +914,11 @@ std::string UniValue::write(unsigned int prettyIndent, unsigned int /* indentLev
         yyjson_mut_doc_free(temp_doc);
         
         // Post-process to match UniValue's escaping behavior for DEL (0x7f)
+        // OPTIMIZATION: Early exit if no DEL characters present
+        if (result.find(0x7f) == std::string::npos) {
+            return result; // No processing needed
+        }
+        
         std::string final_result;
         final_result.reserve(result.size() + 10);
         for (size_t i = 0; i < result.size(); i++) {
@@ -940,8 +945,41 @@ std::string UniValue::write(unsigned int prettyIndent, unsigned int /* indentLev
     // Post-process to match UniValue's escaping behavior:
     // 1. Replace raw DEL (0x7f) characters with \u007f
     // 2. Convert uppercase hex in escape sequences to lowercase
+    // OPTIMIZATION: Early exit if no processing needed
+    
+    // Fast path: check if any processing is needed
+    size_t del_pos = result.find(0x7f);
+    size_t u_pos = result.find("\\u");
+    
+    if (del_pos == std::string::npos && u_pos == std::string::npos) {
+        return result; // No processing needed at all
+    }
+    
+    // Check if uppercase hex conversion is actually needed
+    bool needs_uppercase_conversion = false;
+    if (u_pos != std::string::npos && del_pos == std::string::npos) {
+        // Only need to check for uppercase if there are escape sequences but no DEL
+        for (size_t i = u_pos; i < result.size(); ) {
+            if (result[i] == '\\' && i + 5 < result.size() && result[i+1] == 'u') {
+                for (int j = 2; j < 6; j++) {
+                    if (result[i+j] >= 'A' && result[i+j] <= 'F') {
+                        needs_uppercase_conversion = true;
+                        goto processing_needed;
+                    }
+                }
+                i += 6;
+            } else {
+                i++;
+            }
+        }
+        if (!needs_uppercase_conversion) {
+            return result; // No uppercase hex to convert
+        }
+    }
+    processing_needed:
+    
     std::string final_result;
-    final_result.reserve(result.size() + 10); // Reserve extra space for potential escapes
+    final_result.reserve(result.size() + (del_pos != std::string::npos ? 6 : 0));
     
     for (size_t i = 0; i < result.size(); i++) {
         unsigned char c = result[i];
