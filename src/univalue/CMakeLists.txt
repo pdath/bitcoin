@@ -45,11 +45,6 @@ target_link_libraries(univalue PRIVATE core_interface)
 # Platform-specific compiler warnings
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(univalue PRIVATE -Wno-unused-parameter)
-  # Suppress C++-only flag warnings for C files (yyjson.c)
-  if(WITH_YYJSON)
-    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/yyjson/yyjson.c PROPERTIES
-      COMPILE_OPTIONS "-Wno-overloaded-virtual;-Wno-suggest-override")
-  endif()
 endif()
 
 target_compile_features(univalue PRIVATE cxx_std_17)
