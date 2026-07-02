@@ -208,6 +208,12 @@ bool UniValue::read(std::string_view str_in) {
     // Create a new mutable document and copy the tree.
     yyjson_mut_doc* mut_doc = yyjson_mut_doc_new(nullptr);
     yyjson_mut_val* mut_root = copyYyjsonValue(root, mut_doc);
+    if (!mut_root) {
+        // Copy failed, clean up and return failure
+        yyjson_mut_doc_free(mut_doc);
+        yyjson_doc_free(doc);
+        return false;
+    }
     yyjson_mut_doc_set_root(mut_doc, mut_root);
     
     // Store document with automatic cleanup using shared_ptr

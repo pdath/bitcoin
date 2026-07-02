@@ -891,13 +891,16 @@ void UniValue::reserve(size_t new_cap) {
  */
 void UniValue::push_back(UniValue val) {
     checkType(VARR);
-    m_materialized = false;
     
     // Add to yyjson array (primary storage)
     if (m_yyjson_doc && m_yyjson_node && yyjson_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
         if (val.m_yyjson_doc && val.m_yyjson_node) {
             // val has its own yyjson tree - copy it
             yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
+            if (!new_val) {
+                // Copy failed, don't mark as unmaterialized
+                return;
+            }
             yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val);
         } else {
             // Optimization: val is a primitive without its own document
@@ -922,6 +925,8 @@ void UniValue::push_back(UniValue val) {
                     break;
             }
         }
+        // Only mark as unmaterialized if we successfully added to the yyjson tree
+        m_materialized = false;
     }
     // Don't add to old representation - will be materialized on demand from yyjson tree
 }
@@ -957,6 +962,10 @@ void UniValue::pushKV(std::string key, UniValue val) {
         if (val.m_yyjson_doc && val.m_yyjson_node) {
             // val has its own yyjson tree - copy it
             yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
+            if (!new_val) {
+                // Copy failed, clean up the key we allocated and return
+                return;
+            }
             yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
         } else {
             // val is a primitive without its own document
