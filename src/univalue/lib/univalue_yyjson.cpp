@@ -191,7 +191,7 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
 bool UniValue::isTrue() const {
     if (typ != VBOOL) return false;
     if (!m_materialized) {
-        const_cast<UniValue*>(this)->materializeFromYyjson();
+        const_cast<UniValue*>(this)->materialize();
     }
     return val == "1";
 }
@@ -207,7 +207,7 @@ bool UniValue::isTrue() const {
 bool UniValue::isFalse() const {
     if (typ != VBOOL) return false;
     if (!m_materialized) {
-        const_cast<UniValue*>(this)->materializeFromYyjson();
+        const_cast<UniValue*>(this)->materialize();
     }
     return val != "1";
 }
@@ -857,77 +857,6 @@ void UniValue::materialize() const {
     self->m_materialized = true;
 }
 
-/**
- * @brief Materialize primitive values from yyjson tree
- *
- * Similar to materialize() but only handles primitive types (not containers).
- * For containers, delegates to materialize().
- *
- * This is used when only primitive materialization is needed.
- */
-void UniValue::materializeFromYyjson() const {
-    if (m_materialized) return;
-    UniValue* self = const_cast<UniValue*>(this);
-    if (!m_yyjson_doc || !m_yyjson_node) return;
-    
-    yyjson_type ytype = yyjson_get_type(m_yyjson_node);
-    
-    // Only materialize primitives, not containers
-    if (ytype == YYJSON_TYPE_ARR || ytype == YYJSON_TYPE_OBJ) {
-        self->materialize();
-        return;
-    }
-    
-    switch (ytype) {
-        case YYJSON_TYPE_NULL:
-            self->typ = VNULL;
-            break;
-        case YYJSON_TYPE_BOOL:
-            self->typ = VBOOL;
-            if (yyjson_get_bool(m_yyjson_node)) {
-                self->val = "1";
-            } else {
-                self->val.clear();  // Empty string for false
-            }
-            break;
-        case YYJSON_TYPE_RAW:
-        case YYJSON_TYPE_NUM: {
-            const char* raw = yyjson_get_raw(m_yyjson_node);
-            size_t len = yyjson_get_len(m_yyjson_node);
-            self->typ = VNUM;
-            if (raw && len > 0) {
-                self->val.assign(raw, len);
-            } else {
-                self->val = "0"; // Fallback for invalid numbers
-            }
-            break;
-        }
-        case YYJSON_TYPE_STR: {
-            const char* str = yyjson_get_str(m_yyjson_node);
-            size_t len = yyjson_get_len(m_yyjson_node);
-            self->typ = VSTR;
-            if (str && len > 0) {
-                self->val.assign(str, len);
-            } else {
-                self->val = ""; // Fallback for invalid strings
-            }
-            break;
-        }
-        default:
-            break;
-    }
-    
-    self->m_materialized = true;
-}
-
-/**
- * @brief Materialize container values
- *
- * Alias for materialize() for containers.
- */
-void UniValue::materializeContainer() const {
-    materialize();
-}
 
 /**
  * @brief Find a key in an object
@@ -965,7 +894,7 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
  */
 const std::string& UniValue::getValStr() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materializeFromYyjson();
+        const_cast<UniValue*>(this)->materialize();
     }
     return val;
 }
@@ -1287,7 +1216,7 @@ const std::vector<UniValue>& UniValue::getValues() const {
 bool UniValue::get_bool() const {
     checkType(VBOOL);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materializeFromYyjson();
+        const_cast<UniValue*>(this)->materialize();
     }
     return val == "1";
 }
@@ -1303,7 +1232,7 @@ bool UniValue::get_bool() const {
 const std::string& UniValue::get_str() const {
     checkType(VSTR);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materializeFromYyjson();
+        const_cast<UniValue*>(this)->materialize();
     }
     return val;
 }
@@ -1320,7 +1249,7 @@ const std::string& UniValue::get_str() const {
 double UniValue::get_real() const {
     checkType(VNUM);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materializeFromYyjson();
+        const_cast<UniValue*>(this)->materialize();
     }
     try {
         return std::stod(val);

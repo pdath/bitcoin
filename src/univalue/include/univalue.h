@@ -156,8 +156,6 @@ private:
     mutable bool m_materialized{false};    // Whether lazy caches have been populated
 
     void materialize() const;              // Populate lazy caches from yyjson
-    void materializeFromYyjson() const;     // Materialize primitives from yyjson
-    void materializeContainer() const;     // Materialize containers from yyjson
     static void yyjson_doc_deleter(yyjson_mut_doc* doc);
 #endif
 
