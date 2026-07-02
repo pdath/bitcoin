@@ -310,6 +310,15 @@ static const char *escapes[256] = {
     nullptr,
 };
 
+/**
+ * @brief Escape special characters in a JSON string
+ *
+ * Replaces control characters and special JSON characters with their escaped equivalents.
+ * Uses a lookup table for efficient character-by-character processing.
+ *
+ * @param inS The input string to escape
+ * @return The escaped string safe for JSON output
+ */
 std::string json_escape(const std::string& inS)
 {
     std::string outS;
@@ -328,6 +337,16 @@ std::string json_escape(const std::string& inS)
     return outS;
 }
 
+/**
+ * @brief Append indentation string for pretty printing
+ *
+ * Appends the appropriate number of spaces for the current indentation level.
+ * Used for formatting JSON output with nested structures.
+ *
+ * @param prettyIndent Number of spaces per indentation level
+ * @param indentLevel Current nesting level (0 for root)
+ * @param s The string to append the indentation to
+ */
 void indentStr(unsigned int prettyIndent, unsigned int indentLevel, std::string& s)
 {
     s.append(prettyIndent * indentLevel, ' ');

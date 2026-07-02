@@ -291,7 +291,12 @@ UniValue::UniValue(const UniValue& other)
         // Other has a document - deep copy it
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
         m_yyjson_node = (yyjson_val*)copyYyjsonValue(other.m_yyjson_node, m_yyjson_doc.get());
-        setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+        if (!m_yyjson_node) {
+            // Copy failed, clean up the document we just created
+            m_yyjson_doc.reset();
+        } else {
+            setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+        }
     } else {
         // Other doesn't have a document (primitive without doc)
         m_yyjson_doc = nullptr;
@@ -349,7 +354,12 @@ UniValue& UniValue::operator=(const UniValue& other) {
         if (other.m_yyjson_doc && other.m_yyjson_node) {
             m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
             m_yyjson_node = (yyjson_val*)copyYyjsonValue(other.m_yyjson_node, m_yyjson_doc.get());
-            setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+            if (!m_yyjson_node) {
+                // Copy failed, clean up the document we just created
+                m_yyjson_doc.reset();
+            } else {
+                setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+            }
         }
         // For primitives without documents, m_yyjson_doc and m_yyjson_node stay nullptr
         

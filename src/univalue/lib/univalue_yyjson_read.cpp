@@ -56,7 +56,10 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             size_t idx, max;
             yyjson_val *item;
             yyjson_arr_foreach(src_val, idx, max, item) {
-                yyjson_mut_arr_append(arr, copyYyjsonValue(item, target_doc));
+                yyjson_mut_val* copied = copyYyjsonValue(item, target_doc);
+                if (copied) {
+                    yyjson_mut_arr_append(arr, copied);
+                }
             }
             return arr;
         }
@@ -71,7 +74,9 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
                 size_t klen = yyjson_get_len(key);
                 yyjson_mut_val* new_key = yyjson_mut_strncpy(target_doc, kstr, klen);
                 yyjson_mut_val* new_val = copyYyjsonValue(val, target_doc);
-                yyjson_mut_obj_add(obj, new_key, new_val);
+                if (new_key && new_val) {
+                    yyjson_mut_obj_add(obj, new_key, new_val);
+                }
             }
             return obj;
         }
