@@ -14,6 +14,8 @@
  *
  * Handles primitive values (VSTR, VNUM, VBOOL, VNULL) that don't have their own
  * yyjson documents by creating temporary documents for serialization.
+ * This fallback path is used when we need to serialize from the materialized
+ * representation (val, keys, values vectors) rather than directly from the yyjson tree.
  *
  * @param uv The UniValue to serialize
  * @param prettyIndent Indentation level for pretty printing (0 for compact)

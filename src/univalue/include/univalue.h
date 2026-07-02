@@ -151,12 +151,12 @@ private:
 
 #ifdef WITH_YYJSON
     // yyjson primary storage
-    mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc;
-    mutable yyjson_val* m_yyjson_node{nullptr};
-    mutable bool m_materialized{false};    // Whether lazy caches have been populated
+    mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc; //!< Shared pointer to yyjson mutable document (primary storage)
+    mutable yyjson_val* m_yyjson_node{nullptr};        //!< Pointer to the root node in the yyjson tree
+    mutable bool m_materialized{false};                //!< Whether lazy caches (val/keys/values) have been populated
 
     void materialize() const;              // Populate lazy caches from yyjson
-    static void yyjson_doc_deleter(yyjson_mut_doc* doc);
+    static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr
 #endif
 
     void checkType(const VType& expected) const;

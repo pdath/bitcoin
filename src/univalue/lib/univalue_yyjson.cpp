@@ -174,7 +174,7 @@ void UniValue::yyjson_doc_deleter(yyjson_mut_doc* doc) {
 }
 
 /**
- * @brief Set the root node of a yyjson document
+ * @brief Set the root node of a yyjson mutable document
  *
  * Establishes ownership relationship between document and root node.
  * Required when creating new documents and assigning root nodes.
@@ -452,8 +452,8 @@ void UniValue::setBool(bool val_) {
 /**
  * @brief Check if character is a digit (0-9)
  *
- * @param ch Character to check
- * @return true if ch is between '0' and '9' inclusive
+ * @param ch Character to check (as int for compatibility with character classification)
+ * @return true if ch is between '0' and '9' inclusive, false otherwise
  */
 static bool json_isdigit(int ch) {
     return ((ch >= '0') && (ch <= '9'));
@@ -908,32 +908,38 @@ void UniValue::push_back(UniValue val) {
             // val has its own yyjson tree - copy it
             yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
             if (!new_val) {
-                // Copy failed, don't mark as unmaterialized
+                // Copy failed, cannot add to array
                 return;
             }
             yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val);
         } else {
             // Optimization: val is a primitive without its own document
             // Create yyjson node directly from val's value
+            yyjson_mut_val* new_val = nullptr;
             switch (val.typ) {
                 case VNULL:
-                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, yyjson_mut_null(m_yyjson_doc.get()));
+                    new_val = yyjson_mut_null(m_yyjson_doc.get());
                     break;
                 case VBOOL:
-                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1"));
+                    new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
                     break;
                 case VNUM:
-                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
                     break;
                 case VSTR:
-                    yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
                     break;
                 case VOBJ:
                 case VARR:
                     // Containers should have their own documents - this is an error case
                     // For now, just skip it
-                    break;
+                    return;
             }
+            if (!new_val) {
+                // Node creation failed, cannot add to array
+                return;
+            }
+            yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val);
         }
         // Only mark as unmaterialized if we successfully added to the yyjson tree
         m_materialized = false;
@@ -966,14 +972,19 @@ void UniValue::pushKV(std::string key, UniValue val) {
             yyjson_mut_obj_remove_str((yyjson_mut_val*)m_yyjson_node, key.data());
         }
         // Add new key-value pair
+        // Create key first, then value - if either fails, we return without adding
         yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
+        if (!new_key) {
+            // Key allocation failed, cannot add the pair
+            return;
+        }
         
         // Optimization: Handle primitives without documents directly
         if (val.m_yyjson_doc && val.m_yyjson_node) {
             // val has its own yyjson tree - copy it
             yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
             if (!new_val) {
-                // Copy failed, clean up the key we allocated and return
+                // Copy failed, cannot add the pair
                 return;
             }
             yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
@@ -997,7 +1008,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 case VARR:
                     // Containers should have their own documents - this is an error case
                     // For now, just skip it
-                    break;
+                    return;
             }
         }
     } else {
