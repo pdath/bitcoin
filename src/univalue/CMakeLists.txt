@@ -13,6 +13,7 @@ if(WITH_YYJSON)
         lib/univalue_common.cpp
         lib/univalue_yyjson.cpp
         lib/univalue_yyjson_read.cpp
+        lib/univalue_yyjson_write.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/yyjson/yyjson.c
     )
     target_compile_definitions(univalue PUBLIC WITH_YYJSON)
