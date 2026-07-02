@@ -25,6 +25,8 @@
  * @param indentLevel Current nesting level for indentation
  * @return JSON string representation of the value
  */
+static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel);
+
 /**
  * @brief Deep copy a yyjson value from source to target document
  *
