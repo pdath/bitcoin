@@ -42,11 +42,6 @@ target_include_directories(univalue
 )
 target_link_libraries(univalue PRIVATE core_interface)
 
-# Platform-specific compiler warnings
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(univalue PRIVATE -Wno-unused-parameter)
-endif()
-
 target_compile_features(univalue PRIVATE cxx_std_17)
 
 if(BUILD_TESTS)

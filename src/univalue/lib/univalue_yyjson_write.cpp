@@ -73,13 +73,9 @@ static std::string postProcessYyjsonOutput(std::string result) {
                     char hex_char = result[i + j];
                     if (hex_char >= 'A' && hex_char <= 'F') {
                         final_result += (hex_char - 'A' + 'a');
-                    } else if (hex_char >= 'a' && hex_char <= 'f') {
-                        final_result += hex_char;
-                    } else if (hex_char >= '0' && hex_char <= '9') {
-                        final_result += hex_char;
                     } else {
-                        // Invalid hex character in \uXXXX - this shouldn't happen with yyjson
-                        // but handle gracefully by copying as-is
+                        // For lowercase hex, digits, or invalid chars: copy as-is
+                        // (lowercase hex and digits don't need conversion)
                         final_result += hex_char;
                     }
                 }
@@ -274,10 +270,10 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
  * for maximum performance when possible.
  *
  * @param prettyIndent Indentation level for pretty printing (0 for compact)
- * @param indentLevel Current nesting level (unused in this implementation)
+ * @param indentLevel Current nesting level (unused in this implementation, kept for API compatibility)
  * @return JSON string representation
  */
-std::string UniValue::write(unsigned int prettyIndent, unsigned int /* indentLevel */) const {
+std::string UniValue::write(unsigned int prettyIndent, [[maybe_unused]] unsigned int indentLevel) const {
     // Delegate to writeYyjson which handles the optimized path
     return writeYyjson(prettyIndent);
 }
