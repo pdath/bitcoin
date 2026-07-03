@@ -31,7 +31,7 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
  * 1. yyjson doesn't escape DEL (0x7f) by default, but UniValue does
  * 2. yyjson uses uppercase hex in \uXXXX escapes, but UniValue uses lowercase
  *
- * Uses optimized fast-path checks to avoid unnecessary processing.
+ * Uses optimized single-pass processing to avoid multiple string scans.
  *
  * @param result The JSON string from yyjson_mut_write
  * @return Post-processed string matching UniValue behavior
@@ -45,54 +45,54 @@ static std::string postProcessYyjsonOutput(std::string result) {
         return result; // No processing needed at all
     }
 
-    // Check if uppercase hex conversion is actually needed
-    bool needs_uppercase_conversion = false;
-    if (u_pos != std::string::npos && del_pos == std::string::npos) {
-        // Only need to check for uppercase if there are escape sequences but no DEL
-        for (size_t i = u_pos; i < result.size(); ) {
-            if (result[i] == '\\' && i + 5 < result.size() && result[i+1] == 'u') {
-                for (int j = 2; j < 6; j++) {
-                    if (result[i+j] >= 'A' && result[i+j] <= 'F') {
-                        needs_uppercase_conversion = true;
-                        goto processing_needed;
-                    }
-                }
-                i += 6;
-            } else {
-                i++;
-            }
-        }
-        if (!needs_uppercase_conversion) {
-            return result; // No uppercase hex to convert
-        }
-    }
-    processing_needed:
-
+    // Single-pass processing: handle both DEL and \uXXXX in one iteration
     std::string final_result;
-    final_result.reserve(result.size() + (del_pos != std::string::npos ? 6 : 0));
+    final_result.reserve(result.size() + 10); // Extra space for potential expansions
 
-    for (size_t i = 0; i < result.size(); i++) {
+    const size_t UNICODE_ESCAPE_LENGTH = 6; // Length of "\uXXXX" sequence
+    const size_t HEX_START = 2; // Position of first hex digit in "\uXXXX"
+    
+    for (size_t i = 0; i < result.size(); ) {
         unsigned char c = result[i];
+        
         if (c == 0x7f) {
             // Replace DEL with \u007f
             final_result += "\\u007f";
-        } else if (i + 1 < result.size() && c == '\\' && result[i+1] == 'u') {
-            // Found \uXXXX, copy it and convert hex digits to lowercase
-            final_result += '\\';
-            final_result += 'u';
-            if (i + 5 < result.size()) {
-                for (int j = 2; j < 6; j++) {
+            i++;
+        } else if (c == '\\' && i + 1 < result.size() && result[i+1] == 'u') {
+            // Found start of \uXXXX sequence
+            
+            // Check if we have a complete \uXXXX sequence
+            if (i + UNICODE_ESCAPE_LENGTH <= result.size()) {
+                // Process complete \uXXXX sequence, converting uppercase hex to lowercase
+                final_result += '\\';
+                final_result += 'u';
+                
+                // Process all 4 hex digits, converting uppercase to lowercase
+                for (size_t j = HEX_START; j < UNICODE_ESCAPE_LENGTH; j++) {
                     char hex_char = result[i + j];
                     if (hex_char >= 'A' && hex_char <= 'F') {
                         final_result += (hex_char - 'A' + 'a');
+                    } else if (hex_char >= 'a' && hex_char <= 'f') {
+                        final_result += hex_char;
+                    } else if (hex_char >= '0' && hex_char <= '9') {
+                        final_result += hex_char;
                     } else {
+                        // Invalid hex character in \uXXXX - this shouldn't happen with yyjson
+                        // but handle gracefully by copying as-is
                         final_result += hex_char;
                     }
                 }
-                i += 5; // Skip the next 5 characters
+                i += UNICODE_ESCAPE_LENGTH; // Skip the entire \uXXXX sequence
+            } else {
+                // Incomplete \u sequence at end of string - copy characters as-is
+                // Don't interpret as escape sequence
+                final_result += c;
+                i++;
             }
         } else {
             final_result += c;
+            i++;
         }
     }
 
@@ -195,24 +195,8 @@ static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int pret
     free(output);
     yyjson_mut_doc_free(temp_doc);
 
-    // Post-process to match UniValue's escaping behavior for DEL (0x7f)
-    // Fast-path: check if any processing is needed
-    if (result.find(0x7f) == std::string::npos) {
-        return result; // No processing needed
-    }
-
-    // Replace DEL characters with \u007f
-    std::string final_result;
-    final_result.reserve(result.size() + 10);
-    for (size_t i = 0; i < result.size(); i++) {
-        unsigned char c = result[i];
-        if (c == 0x7f) {
-            final_result += "\\u007f";
-        } else {
-            final_result += c;
-        }
-    }
-    return final_result;
+    // Use the shared post-processing function to handle DEL and \uXXXX
+    return postProcessYyjsonOutput(std::move(result));
 }
 
 /**
