@@ -52,10 +52,8 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
             return '"' + json_escape(uv.getValStr()) + '"';
         case UniValue::VARR: {
             if (uv.empty()) {
-                if (pretty) {
-                    return "[\n" + indentStr + "]";
-                }
-                return "[]";
+                if (!pretty) return "[]";
+                return std::string("[\n") + indentStr + "]";
             }
             std::string s = "[";
             if (pretty) s += "\n";
@@ -74,10 +72,8 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
         }
         case UniValue::VOBJ: {
             if (uv.empty()) {
-                if (pretty) {
-                    return "{\n" + indentStr + "}";
-                }
-                return "{}";
+                if (!pretty) return "{}";
+                return std::string("{\n") + indentStr + "}";
             }
             std::string s = "{";
             if (pretty) s += "\n";
