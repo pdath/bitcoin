@@ -10,21 +10,6 @@
 #include <vector>
 
 /**
- * @brief Forward declaration for recursive value serialization
- *
- * Handles primitive values (VSTR, VNUM, VBOOL, VNULL) that don't have their own
- * yyjson documents by creating temporary documents for serialization.
- * This fallback path is used when we need to serialize from the materialized
- * representation (val, keys, values vectors) rather than directly from the yyjson tree.
- *
- * @param uv The UniValue to serialize
- * @param prettyIndent Indentation level for pretty printing (0 for compact)
- * @param indentLevel Current nesting level for indentation
- * @return JSON string representation of the value
- */
-static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel);
-
-/**
  * @brief Post-process yyjson output to match UniValue escaping behavior
  *
  * Handles two differences:

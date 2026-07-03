@@ -337,7 +337,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
             m_materialized = false;
         }
         
-        // Clear old yyjson state
+        // Clear existing yyjson state
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
         
@@ -354,7 +354,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
         }
         // For primitives without documents, m_yyjson_doc and m_yyjson_node stay nullptr
         
-        // Clear old container representation (will be lazily materialized if needed)
+        // Clear existing container representation (will be lazily materialized if needed)
         keys.clear();
         values.clear();
     }
@@ -672,10 +672,10 @@ void UniValue::checkType(const VType& expected) const {
     }
 }
 /**
- * @brief Materialize the yyjson tree into the old representation (val/keys/values)
+ * @brief Materialize the yyjson tree into the legacy UniValue representation
  *
  * Populates the `val`, `keys`, and `values` members from the yyjson tree.
- * This is called lazily when accessors need the old representation.
+ * This is called lazily when accessors need the legacy representation.
  *
  * For primitives: Extracts the value from the yyjson node into `val`
  * For arrays: Builds the `values` vector from the yyjson array
@@ -729,7 +729,7 @@ void UniValue::materialize() const {
         case YYJSON_TYPE_ARR:
             self->typ = VARR;
             {
-                // Clear old representation
+                // Clear existing representation
                 self->values.clear();
                 
                 // Optimization: Pre-allocate capacity to avoid reallocations
@@ -752,7 +752,7 @@ void UniValue::materialize() const {
         case YYJSON_TYPE_OBJ:
             self->typ = VOBJ;
             {
-                // Clear old representation
+                // Clear existing representation
                 self->keys.clear();
                 self->values.clear();
                 
@@ -935,7 +935,7 @@ void UniValue::push_back(UniValue val) {
         // Only mark as unmaterialized if we successfully added to the yyjson tree
         m_materialized = false;
     }
-    // Don't add to old representation - will be materialized on demand from yyjson tree
+    // Don't add to legacy representation - will be materialized on demand from yyjson tree
 }
 
 /**
@@ -1003,7 +1003,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
             }
         }
     } else {
-        // Fallback to old representation if this object doesn't have yyjson tree
+        // Fallback to legacy representation if this object doesn't have yyjson tree
         if (m_materialized && findKey(key, idx)) {
             values[idx] = std::move(val);
         } else {
@@ -1071,7 +1071,7 @@ void UniValue::pushKVs(UniValue obj) {
             }
         }
     } else {
-        // Fallback: materialize and iterate over old representation
+        // Fallback: materialize and iterate over legacy representation
         if (!obj.m_materialized) {
             const_cast<UniValue&>(obj).materialize();
         }
