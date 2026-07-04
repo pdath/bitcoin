@@ -956,13 +956,6 @@ void UniValue::pushKV(std::string key, UniValue val) {
     size_t idx;
     if (m_yyjson_doc && m_yyjson_node) {
         // Always update the yyjson tree (primary storage)
-        // Check if key exists
-        yyjson_mut_val* existing = yyjson_mut_obj_get((yyjson_mut_val*)m_yyjson_node, key.data());
-        if (existing) {
-            // Remove existing key-value pair
-            yyjson_mut_obj_remove_str((yyjson_mut_val*)m_yyjson_node, key.data());
-        }
-        // Add new key-value pair
         // Create key first, then value - if either fails, we return without adding
         yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
         if (!new_key) {
@@ -971,29 +964,29 @@ void UniValue::pushKV(std::string key, UniValue val) {
         }
         
         // Optimization: Handle primitives without documents directly
+        yyjson_mut_val* new_val = nullptr;
         if (val.m_yyjson_doc && val.m_yyjson_node) {
             // val has its own yyjson tree - copy it
-            yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
+            new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
             if (!new_val) {
                 // Copy failed, cannot add the pair
                 return;
             }
-            yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
         } else {
             // val is a primitive without its own document
             // Create yyjson node directly from val's value
             switch (val.typ) {
                 case VNULL:
-                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, yyjson_mut_null(m_yyjson_doc.get()));
+                    new_val = yyjson_mut_null(m_yyjson_doc.get());
                     break;
                 case VBOOL:
-                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1"));
+                    new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
                     break;
                 case VNUM:
-                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
                     break;
                 case VSTR:
-                    yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size()));
+                    new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
                     break;
                 case VOBJ:
                 case VARR:
@@ -1001,6 +994,12 @@ void UniValue::pushKV(std::string key, UniValue val) {
                     // For now, just skip it
                     return;
             }
+        }
+        
+        // Optimization: Use yyjson_mut_obj_put which handles both new and existing keys
+        // in a single operation, avoiding the separate check+remove+add pattern
+        if (new_val) {
+            yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
         }
     } else {
         // Fallback to legacy representation if this object doesn't have yyjson tree
