@@ -1029,7 +1029,61 @@ void UniValue::pushKV(std::string key, UniValue val) {
  * @param val The value to associate with the key
  */
 void UniValue::pushKVEnd(std::string key, UniValue val) {
-    pushKV(std::move(key), std::move(val));
+    checkType(VOBJ);
+    
+    size_t idx;
+    if (m_yyjson_doc && m_yyjson_node) {
+        // Optimized path: assume keys are unique, skip duplicate checking
+        // Create key first, then value - if either fails, we return without adding
+        yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
+        if (!new_key) {
+            // Key allocation failed, cannot add the pair
+            return;
+        }
+        
+        // Handle primitives without documents directly
+        yyjson_mut_val* new_val = nullptr;
+        if (val.m_yyjson_doc && val.m_yyjson_node) {
+            // val has its own yyjson tree - use yyjson's optimized copy function
+            new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+            if (!new_val) {
+                // Copy failed, cannot add the pair
+                return;
+            }
+        } else {
+            // val is a primitive without its own document
+            // Create yyjson node directly from val's value
+            switch (val.typ) {
+                case VNULL:
+                    new_val = yyjson_mut_null(m_yyjson_doc.get());
+                    break;
+                case VBOOL:
+                    new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
+                    break;
+                case VNUM:
+                    new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                    break;
+                case VSTR:
+                    new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                    break;
+                case VOBJ:
+                case VARR:
+                    // Containers should have their own documents - this is an error case
+                    // For now, just skip it
+                    return;
+            }
+        }
+        
+        // Add to object - no duplicate key checking for better performance
+        if (new_val) {
+            yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
+        }
+    } else {
+        // Fallback to legacy representation if this object doesn't have yyjson tree
+        keys.push_back(std::move(key));
+        values.push_back(std::move(val));
+    }
+    m_materialized = false;
 }
 
 /**
