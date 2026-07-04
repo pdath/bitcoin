@@ -17,6 +17,7 @@
 
 
 /**
+/**
  * @brief Deep copy a yyjson value from source to target document
  *
  * Creates a copy of the yyjson value tree in the target document's memory pool.
@@ -35,6 +36,7 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
     
     yyjson_type type = yyjson_get_type(src_val);
     
+    // Fast path for primitives - direct creation without recursion
     switch (type) {
         case YYJSON_TYPE_NULL:
             return yyjson_mut_null(target_doc);
@@ -55,6 +57,8 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             size_t len = yyjson_get_len(src_val);
             return yyjson_mut_strncpy(target_doc, str, len);
         }
+        
+        // Container types - optimized copying
         case YYJSON_TYPE_ARR: {
             yyjson_mut_val* arr = yyjson_mut_arr(target_doc);
             if (!arr) return nullptr;
@@ -64,7 +68,8 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             yyjson_mut_arr_iter miter;
             if (yyjson_mut_arr_iter_init((yyjson_mut_val*)src_val, &miter)) {
                 while ((item = yyjson_mut_arr_iter_next(&miter))) {
-                    yyjson_mut_val* copied = copyYyjsonValue((yyjson_val*)item, target_doc);
+                    // Use yyjson's optimized copy function for each array element
+                    yyjson_mut_val* copied = yyjson_val_mut_copy(target_doc, (yyjson_val*)item);
                     if (copied) {
                         yyjson_mut_arr_append(arr, copied);
                     }
@@ -72,6 +77,7 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             }
             return arr;
         }
+        
         case YYJSON_TYPE_OBJ: {
             yyjson_mut_val* obj = yyjson_mut_obj(target_doc);
             if (!obj) return nullptr;
@@ -86,7 +92,8 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
                     size_t klen = yyjson_get_len((yyjson_val*)key);
                     if (kstr && klen > 0) {
                         yyjson_mut_val* new_key = yyjson_mut_strncpy(target_doc, kstr, klen);
-                        yyjson_mut_val* new_val = copyYyjsonValue((yyjson_val*)val, target_doc);
+                        // Use yyjson's optimized copy function for each object value
+                        yyjson_mut_val* new_val = yyjson_val_mut_copy(target_doc, (yyjson_val*)val);
                         if (new_key && new_val) {
                             yyjson_mut_obj_add(obj, new_key, new_val);
                         }
@@ -95,6 +102,7 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             }
             return obj;
         }
+        
         default:
             return nullptr;
     }
@@ -279,9 +287,9 @@ UniValue::UniValue(const UniValue& other)
     // Deep copy the yyjson tree (for containers and parsed primitives)
     // For manually constructed primitives, they don't have documents, so just set to null
     if (other.m_yyjson_doc && other.m_yyjson_node) {
-        // Other has a document - deep copy it
+        // Other has a document - deep copy it using yyjson's optimized copy function
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-        m_yyjson_node = (yyjson_val*)copyYyjsonValue(other.m_yyjson_node, m_yyjson_doc.get());
+        m_yyjson_node = (yyjson_val*)yyjson_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
         if (!m_yyjson_node) {
             // Copy failed, clean up the document we just created
             m_yyjson_doc.reset();
@@ -344,7 +352,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
         // Deep copy the yyjson tree (for containers and parsed primitives)
         if (other.m_yyjson_doc && other.m_yyjson_node) {
             m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-            m_yyjson_node = (yyjson_val*)copyYyjsonValue(other.m_yyjson_node, m_yyjson_doc.get());
+            m_yyjson_node = (yyjson_val*)yyjson_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
             if (!m_yyjson_node) {
                 // Copy failed, clean up the document we just created
                 m_yyjson_doc.reset();
@@ -896,8 +904,8 @@ void UniValue::push_back(UniValue val) {
     // Add to yyjson array (primary storage)
     if (m_yyjson_doc && m_yyjson_node && yyjson_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
         if (val.m_yyjson_doc && val.m_yyjson_node) {
-            // val has its own yyjson tree - copy it
-            yyjson_mut_val* new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
+            // val has its own yyjson tree - use yyjson's optimized copy function
+            yyjson_mut_val* new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
             if (!new_val) {
                 // Copy failed, cannot add to array
                 return;
@@ -966,8 +974,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
         // Optimization: Handle primitives without documents directly
         yyjson_mut_val* new_val = nullptr;
         if (val.m_yyjson_doc && val.m_yyjson_node) {
-            // val has its own yyjson tree - copy it
-            new_val = copyYyjsonValue(val.m_yyjson_node, m_yyjson_doc.get());
+            // val has its own yyjson tree - use yyjson's optimized copy function
+            new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
             if (!new_val) {
                 // Copy failed, cannot add the pair
                 return;
