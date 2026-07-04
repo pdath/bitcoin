@@ -1075,7 +1075,7 @@ void UniValue::pushKVs(UniValue obj) {
         if (!obj.m_materialized) {
             const_cast<UniValue&>(obj).materialize();
         }
-        for (size_t i = 0; i < obj.keys.size(); i++)
+        for (size_t i = 0; i < obj.keys.size(); ++i)
             pushKV(obj.keys[i], obj.values[i]);
     }
 }

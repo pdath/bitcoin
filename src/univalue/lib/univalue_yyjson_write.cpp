@@ -43,7 +43,7 @@ static std::string postProcessYyjsonOutput(std::string result) {
         if (c == 0x7f) {
             // Replace DEL with \u007f
             final_result += "\\u007f";
-            i++;
+            ++i;
         } else if (c == '\\' && i + 1 < result.size() && result[i+1] == 'u') {
             // Found start of \uXXXX sequence
             
@@ -69,11 +69,11 @@ static std::string postProcessYyjsonOutput(std::string result) {
                 // Incomplete \u sequence at end of string - copy characters as-is
                 // Don't interpret as escape sequence
                 final_result += c;
-                i++;
+                ++i;
             }
         } else {
             final_result += c;
-            i++;
+            ++i;
         }
     }
 
