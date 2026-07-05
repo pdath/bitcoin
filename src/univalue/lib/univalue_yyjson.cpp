@@ -276,18 +276,25 @@ UniValue::UniValue(const UniValue& other)
     : typ(other.typ)
 {
     // For primitives, copy val directly (it's already populated)
-    // For containers, don't copy val/keys/values - they'll be lazily materialized if needed
+    // For containers, copy keys/values if they've been materialized, otherwise lazy materialization will handle it
     if (other.typ != VARR && other.typ != VOBJ) {
         val = other.val;
         m_materialized = true;
     } else {
-        m_materialized = false;
+        // Container: copy keys and values if materialized, otherwise they'll be lazily materialized
+        if (other.m_materialized) {
+            keys = other.keys;
+            values = other.values;
+            m_materialized = true;
+        } else {
+            m_materialized = false;
+        }
     }
     
-    // Deep copy the yyjson tree (for containers and parsed primitives)
+    // Deep copy the yyjson tree (for containers and parsed primitives that haven't been materialized)
     // For manually constructed primitives, they don't have documents, so just set to null
-    if (other.m_yyjson_doc && other.m_yyjson_node) {
-        // Other has a document - deep copy it using yyjson's optimized copy function
+    if (other.m_yyjson_doc && other.m_yyjson_node && !other.m_materialized) {
+        // Other has a document and hasn't been materialized - deep copy it using yyjson's optimized copy function
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
         m_yyjson_node = (yyjson_val*)yyjson_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
         if (!m_yyjson_node) {
@@ -297,7 +304,7 @@ UniValue::UniValue(const UniValue& other)
             setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
         }
     } else {
-        // Other doesn't have a document (primitive without doc)
+        // Other doesn't have a document (primitive without doc) or has been materialized
         m_yyjson_doc = nullptr;
         m_yyjson_node = nullptr;
     }
@@ -350,7 +357,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
         m_yyjson_node = nullptr;
         
         // Deep copy the yyjson tree (for containers and parsed primitives)
-        if (other.m_yyjson_doc && other.m_yyjson_node) {
+        if (other.m_yyjson_doc && other.m_yyjson_node && !other.m_materialized) {
             m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
             m_yyjson_node = (yyjson_val*)yyjson_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
             if (!m_yyjson_node) {
@@ -701,6 +708,9 @@ void UniValue::materialize() const {
     switch (ytype) {
         case YYJSON_TYPE_NULL:
             self->typ = VNULL;
+            // Clear yyjson state for primitives after materialization
+            self->m_yyjson_doc.reset();
+            self->m_yyjson_node = nullptr;
             break;
         case YYJSON_TYPE_BOOL:
             self->typ = VBOOL;
@@ -710,6 +720,9 @@ void UniValue::materialize() const {
             } else {
                 self->val.clear();  // Empty string for false
             }
+            // Clear yyjson state for primitives after materialization
+            self->m_yyjson_doc.reset();
+            self->m_yyjson_node = nullptr;
             break;
         case YYJSON_TYPE_RAW:
         case YYJSON_TYPE_NUM: {
@@ -721,6 +734,9 @@ void UniValue::materialize() const {
             } else {
                 self->val = "0"; // Fallback for invalid numbers
             }
+            // Clear yyjson state for primitives after materialization
+            self->m_yyjson_doc.reset();
+            self->m_yyjson_node = nullptr;
             break;
         }
         case YYJSON_TYPE_STR: {
@@ -732,6 +748,9 @@ void UniValue::materialize() const {
             } else {
                 self->val = ""; // Fallback for invalid strings
             }
+            // Clear yyjson state for primitives after materialization
+            self->m_yyjson_doc.reset();
+            self->m_yyjson_node = nullptr;
             break;
         }
         case YYJSON_TYPE_ARR:
@@ -973,8 +992,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
         
         // Optimization: Handle primitives without documents directly
         yyjson_mut_val* new_val = nullptr;
-        if (val.m_yyjson_doc && val.m_yyjson_node) {
-            // val has its own yyjson tree - use yyjson's optimized copy function
+        if (val.m_yyjson_doc && val.m_yyjson_node && !val.m_materialized) {
+            // val has its own yyjson tree and hasn't been materialized - use yyjson's optimized copy function
             new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
             if (!new_val) {
                 // Copy failed, cannot add the pair
@@ -1043,8 +1062,8 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
         
         // Handle primitives without documents directly
         yyjson_mut_val* new_val = nullptr;
-        if (val.m_yyjson_doc && val.m_yyjson_node) {
-            // val has its own yyjson tree - use yyjson's optimized copy function
+        if (val.m_yyjson_doc && val.m_yyjson_node && !val.m_materialized) {
+            // val has its own yyjson tree and hasn't been materialized - use yyjson's optimized copy function
             new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
             if (!new_val) {
                 // Copy failed, cannot add the pair
@@ -1094,51 +1113,18 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
  *
  * @param obj The object to merge from (must be an object)
  */
-void UniValue::pushKVs(UniValue obj) {
+void UniValue::pushKVs(const UniValue& obj) {
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
-    // If obj has a yyjson tree, iterate directly over it without materializing
-    if (obj.m_yyjson_doc && obj.m_yyjson_node && !obj.m_materialized) {
-        // Iterate over obj's yyjson tree directly
-        yyjson_mut_val *key, *val;
-        yyjson_mut_obj_iter iter;
-        if (yyjson_mut_obj_iter_init((yyjson_mut_val*)obj.m_yyjson_node, &iter)) {
-            while ((key = yyjson_mut_obj_iter_next(&iter))) {
-                val = yyjson_mut_obj_iter_get_val(key);
-                const char* kstr = yyjson_get_str((yyjson_val*)key);
-                size_t klen = yyjson_get_len((yyjson_val*)key);
-                std::string k(kstr, klen);
-                
-                // Create a new UniValue for the value
-                UniValue v;
-                v.m_yyjson_doc = obj.m_yyjson_doc;
-                v.m_yyjson_node = (yyjson_val*)val;
-                // Set typ based on yyjson type
-                switch (yyjson_get_type((yyjson_val*)val)) {
-                    case YYJSON_TYPE_NULL: v.typ = VNULL; break;
-                    case YYJSON_TYPE_BOOL: v.typ = VBOOL; break;
-                    case YYJSON_TYPE_NUM:
-                    case YYJSON_TYPE_RAW: v.typ = VNUM; break;
-                    case YYJSON_TYPE_STR: v.typ = VSTR; break;
-                    case YYJSON_TYPE_ARR: v.typ = VARR; break;
-                    case YYJSON_TYPE_OBJ: v.typ = VOBJ; break;
-                    default: v.typ = VNULL; break;
-                }
-                v.m_materialized = false;
-                
-                // Add to target
-                pushKV(k, v);
-            }
-        }
-    } else {
-        // Fallback: materialize and iterate over legacy representation
-        if (!obj.m_materialized) {
-            const_cast<UniValue&>(obj).materialize();
-        }
-        for (size_t i = 0; i < obj.keys.size(); ++i)
-            pushKV(obj.keys[i], obj.values[i]);
+    // Materialize obj if needed and iterate over legacy representation
+    if (!obj.m_materialized) {
+        const_cast<UniValue&>(obj).materialize();
     }
+    for (size_t i = 0; i < obj.keys.size(); ++i)
+        pushKV(obj.keys.at(i), obj.values.at(i));
+    
+    m_materialized = false;
 }
 /**
  * @brief Access an object value by key

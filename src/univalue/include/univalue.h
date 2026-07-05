@@ -121,7 +121,7 @@ public:
 
     void pushKVEnd(std::string key, UniValue val);
     void pushKV(std::string key, UniValue val);
-    void pushKVs(UniValue obj);
+    void pushKVs(const UniValue& obj);
 
     std::string write(unsigned int prettyIndent = 0,
                       unsigned int indentLevel = 0) const;
