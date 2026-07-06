@@ -28,13 +28,7 @@ const UniValue NullUniValue;
  */
 bool UniValue::isTrue() const {
     if (typ != VBOOL) return false;
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        // Materialize on-demand. This is safe because:
-        // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
-        // 2. The cache members are mutable when WITH_YYJSON=ON, so this can be done in const context
-        // 3. Materialization is idempotent - calling it multiple times has the same result
-        materialize();
-    }
+    materializeIfNeeded();
     return val == "1";
 }
 
@@ -48,13 +42,7 @@ bool UniValue::isTrue() const {
  */
 bool UniValue::isFalse() const {
     if (typ != VBOOL) return false;
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        // Materialize on-demand. This is safe because:
-        // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
-        // 2. The cache members are mutable when WITH_YYJSON=ON, so this can be done in const context
-        // 3. Materialization is idempotent - calling it multiple times has the same result
-        materialize();
-    }
+    materializeIfNeeded();
     return val != "1";
 }
 

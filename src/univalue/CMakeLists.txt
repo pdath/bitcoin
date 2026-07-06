@@ -29,17 +29,21 @@ else()
     )
 endif()
 
-# Always include yyjson headers for both implementations
+# Include directories for univalue
+# Always include base source and include directories
 target_include_directories(univalue
     PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/yyjson>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-target_include_directories(univalue
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-)
+# Only include yyjson headers when WITH_YYJSON is enabled
+if(WITH_YYJSON)
+    target_include_directories(univalue
+        PUBLIC
+          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/yyjson>
+    )
+endif()
 target_link_libraries(univalue PRIVATE core_interface)
 
 target_compile_features(univalue PRIVATE cxx_std_17)
