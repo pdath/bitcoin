@@ -123,8 +123,15 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
         case UniValue::VARR: {
             if (uv.empty()) {
                 if (!pretty) return "[]";
-                // Legacy format: [\n] without extra indent for empty arrays
-                return "[\n]";
+                std::string s = "[";
+                s += "\n";
+                if (indentLevel > 0) {
+                    std::string closeIndentStr;
+                    ::indentStr(prettyIndent, indentLevel - 1, closeIndentStr);
+                    s += closeIndentStr;
+                }
+                s += "]";
+                return s;
             }
             std::string s = "[";
             if (pretty) s += "\n";
@@ -150,8 +157,15 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
         case UniValue::VOBJ: {
             if (uv.empty()) {
                 if (!pretty) return "{}";
-                // Legacy format: {\n} without extra indent for empty objects
-                return "{\n}";
+                std::string s = "{";
+                s += "\n";
+                if (indentLevel > 0) {
+                    std::string closeIndentStr;
+                    ::indentStr(prettyIndent, indentLevel - 1, closeIndentStr);
+                    s += closeIndentStr;
+                }
+                s += "}";
+                return s;
             }
             std::string s = "{";
             if (pretty) s += "\n";
@@ -264,13 +278,23 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
     bool use_fast_path = can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2) && indentLevel == 1;
     
     if (use_fast_path) {
-        // Handle empty containers to match legacy formatting exactly
-        if ((typ == VARR || typ == VOBJ) && empty()) {
-            if (prettyIndent) {
-                return (typ == VARR) ? "[\n]" : "{\n}";
+        // For empty containers, yyjson's pretty-printing indentation doesn't match the legacy behavior
+        // so fall back to writeYyjsonValueInternal for consistent formatting
+        // Check for emptiness without calling empty() to avoid forcing materialization
+        bool is_empty_container = false;
+        if (typ == VARR || typ == VOBJ) {
+            if (m_yyjson_node) {
+                // Check the yyjson tree directly to avoid materialization
+                is_empty_container = (yyjson_mut_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) 
+                    ? (yyjson_mut_arr_size(m_yyjson_node) == 0)
+                    : (yyjson_mut_obj_size(m_yyjson_node) == 0);
             } else {
-                return (typ == VARR) ? "[]" : "{}";
+                // Fallback to empty() if no yyjson node (shouldn't happen in fast path)
+                is_empty_container = empty();
             }
+        }
+        if (is_empty_container) {
+            return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
         }
         
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;

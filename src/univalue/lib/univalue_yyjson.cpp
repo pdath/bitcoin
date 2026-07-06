@@ -266,40 +266,55 @@ UniValue::UniValue(UniValue&& other) noexcept
  */
 UniValue& UniValue::operator=(const UniValue& other) {
     if (this != &other) {
-        typ = other.typ;
+        // Take a safe snapshot of the source state at the start to handle self-referential assignments
+        // like obj = obj["child"]. This ensures that clearing keys/values doesn't invalidate 'other'.
+        const VType other_typ = other.typ;
+        const std::string other_val = other.val;
+        std::vector<std::string> other_keys;
+        std::vector<UniValue> other_values;
+        bool other_materialized = false;
+        
+        // For containers, we need to snapshot the keys/values before we start modifying this
+        if (other.typ == VARR || other.typ == VOBJ) {
+            // Ensure other is materialized so we can safely copy its data
+            if (other.m_materialized) {
+                other_keys = other.keys;
+                other_values = other.values;
+                other_materialized = true;
+            } else if (other.m_yyjson_doc && other.m_yyjson_node) {
+                // Other has yyjson state but is not materialized - we need to materialize it first
+                // We need to call materialize() on a const object, which is safe due to mutable
+                const_cast<UniValue&>(other).materialize();
+                other_keys = other.keys;
+                other_values = other.values;
+                other_materialized = true;
+            } else {
+                // Other doesn't have yyjson state, copy keys/values directly
+                other_keys = other.keys;
+                other_values = other.values;
+                other_materialized = true;
+            }
+        }
+        
+        // Now safely update this object's state
+        typ = other_typ;
         
         // Clear existing yyjson state
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
         
         // For primitives, copy val directly (it's already populated)
-        if (other.typ != VARR && other.typ != VOBJ) {
+        if (other_typ != VARR && other_typ != VOBJ) {
             // Clear container state (keys/values) when assigning a primitive
             keys.clear();
             values.clear();
-            val = other.val;
+            val = other_val;
             m_materialized = true;
         } else {
-            // For containers: always ensure keys/values are populated for const-correctness
-            // This ensures that getKeys()/getValues() never need to modify a const object
-            if (other.m_materialized) {
-                // Other is already materialized, copy keys/values directly
-                keys = other.keys;
-                values = other.values;
-                m_materialized = true;
-            } else if (other.m_yyjson_doc && other.m_yyjson_node) {
-                // Other has yyjson state but is not materialized - we need to materialize it first
-                other.materialize();
-                // Now copy the materialized data
-                keys = other.keys;
-                values = other.values;
-                m_materialized = true;
-            } else {
-                // Other doesn't have yyjson state, copy keys/values directly
-                keys = other.keys;
-                values = other.values;
-                m_materialized = true;
-            }
+            // For containers: copy from the snapshot
+            keys = std::move(other_keys);
+            values = std::move(other_values);
+            m_materialized = other_materialized;
             // For containers, we don't need yyjson state since we have materialized keys/values
             m_yyjson_doc = nullptr;
             m_yyjson_node = nullptr;
@@ -1166,15 +1181,41 @@ void UniValue::pushKVs(const UniValue& obj) {
         obj.materialize();
     }
     
-    // Only take snapshots when obj may alias this object or one of its descendants
+    // Only take snapshots when obj may alias this object or any of its descendants
     // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
     bool may_alias = (&obj == this);
     if (!may_alias && typ == VOBJ) {
-        // Check if obj is one of our values by direct comparison (not relational pointer arithmetic)
-        for (const auto& v : values) {
-            if (&obj == &v) {
-                may_alias = true;
-                break;
+        // Check if obj can be reached through this object's values (including nested descendants)
+        // Use a simple depth-limited BFS to detect descendant aliasing
+        // Limit depth to 8 levels to prevent excessive recursion while catching common cases
+        const int MAX_DEPTH = 8;
+        std::vector<std::pair<const UniValue*, int>> to_check;
+        to_check.emplace_back(this, 0);
+        
+        while (!may_alias && !to_check.empty()) {
+            const auto [current, depth] = to_check.back();
+            to_check.pop_back();
+            
+            if (depth >= MAX_DEPTH) {
+                continue; // Skip to prevent excessive recursion
+            }
+            
+            if (current->typ == VOBJ || current->typ == VARR) {
+                // Ensure the container is materialized for safe iteration
+                // Use const_cast since materialize() is safe on const objects due to mutable
+                if (current->m_yyjson_doc && current->m_yyjson_node && !current->m_materialized) {
+                    const_cast<UniValue*>(current)->materialize();
+                }
+                
+                // Check direct children
+                for (const auto& v : current->values) {
+                    if (&obj == &v) {
+                        may_alias = true;
+                        break;
+                    }
+                    // Add this child to the check queue for nested descendant checking
+                    to_check.emplace_back(&v, depth + 1);
+                }
             }
         }
     }
@@ -1294,17 +1335,12 @@ bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTy
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
     checkType(VARR);
-    // Guard against self-append: if vec is our own values, take a snapshot before modifying
-    if (&vec == &values) {
-        // Self-append case: vec is our own values vector, must snapshot before modifying
-        std::vector<UniValue> snapshot = vec;
-        for (const auto& v : snapshot) {
-            push_back(v);
-        }
-    } else {
-        for (const auto& v : vec) {
-            push_back(v);
-        }
+    // Always snapshot the input vector to avoid iterator invalidation from self-append
+    // This handles cases like arr.push_backV(arr.values) and nested cases like arr.push_backV(arr[0].values)
+    // The snapshot ensures stable iteration even if push_back causes reallocation of this->values
+    std::vector<UniValue> snapshot = vec;
+    for (const auto& v : snapshot) {
+        push_back(v);
     }
 }
 
