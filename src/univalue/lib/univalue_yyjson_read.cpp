@@ -57,13 +57,8 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
             yyjson_val *item;
             yyjson_arr_foreach(src_val, idx, max, item) {
                 yyjson_mut_val* copied = copyYyjsonValue(item, target_doc);
-                if (!copied) {
-                    // Copy failed, return error (don't free arr as it's owned by target_doc)
-                    return nullptr;
-                }
-                if (!yyjson_mut_arr_append(arr, copied)) {
-                    // Append failed, return error
-                    return nullptr;
+                if (copied) {
+                    yyjson_mut_arr_append(arr, copied);
                 }
             }
             return arr;
@@ -78,18 +73,9 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
                 const char* kstr = yyjson_get_str(key);
                 size_t klen = yyjson_get_len(key);
                 yyjson_mut_val* new_key = yyjson_mut_strncpy(target_doc, kstr, klen);
-                if (!new_key) {
-                    // Key copy failed, return error (don't free obj as it's owned by target_doc)
-                    return nullptr;
-                }
                 yyjson_mut_val* new_val = copyYyjsonValue(val, target_doc);
-                if (!new_val) {
-                    // Value copy failed, return error
-                    return nullptr;
-                }
-                if (!yyjson_mut_obj_add(obj, new_key, new_val)) {
-                    // Add failed, return error
-                    return nullptr;
+                if (new_key && new_val) {
+                    yyjson_mut_obj_add(obj, new_key, new_val);
                 }
             }
             return obj;
@@ -254,24 +240,24 @@ bool UniValue::read(std::string_view str_in) {
     // Parsed primitives (numbers, booleans, strings) are materialized immediately
     // because they're accessed frequently and materialization is cheap.
     // Containers (arrays, objects) remain unmaterialized until accessed.
-    switch (yyjson_mut_get_type(m_yyjson_node)) {
+    switch (yyjson_get_type(m_yyjson_node)) {
         case YYJSON_TYPE_NULL:
             typ = VNULL;
             break;
         case YYJSON_TYPE_BOOL:
             typ = VBOOL;
-            val = yyjson_mut_get_bool(m_yyjson_node) ? "1" : "0";
+            val = yyjson_get_bool(m_yyjson_node) ? "1" : "0";
             break;
         case YYJSON_TYPE_RAW:
         case YYJSON_TYPE_NUM: {
             typ = VNUM;
-            const char* raw = yyjson_mut_get_raw(m_yyjson_node);
-            size_t len = yyjson_mut_get_len(m_yyjson_node);
+            const char* raw = yyjson_get_raw(m_yyjson_node);
+            size_t len = yyjson_get_len(m_yyjson_node);
             if (raw && len > 0) {
                 val.assign(raw, len);
             } else {
                 // Fallback: try to get the string representation
-                const char* str = yyjson_mut_get_str(m_yyjson_node);
+                const char* str = yyjson_get_str(m_yyjson_node);
                 if (str && len > 0) {
                     val.assign(str, len);
                 } else {
@@ -282,8 +268,8 @@ bool UniValue::read(std::string_view str_in) {
         }
         case YYJSON_TYPE_STR: {
             typ = VSTR;
-            const char* str = yyjson_mut_get_str(m_yyjson_node);
-            size_t len = yyjson_mut_get_len(m_yyjson_node);
+            const char* str = yyjson_get_str(m_yyjson_node);
+            size_t len = yyjson_get_len(m_yyjson_node);
             if (str && len > 0) {
                 val.assign(str, len);
             } else {
