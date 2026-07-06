@@ -111,8 +111,16 @@ void UniValue::push_back(UniValue val)
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
     checkType(VARR);
-
-    values.insert(values.end(), vec.begin(), vec.end());
+    // Guard against self-append: if vec is our own values, take a snapshot before modifying
+    if (&vec == &values) {
+        // Self-append case: vec is our own values vector, must snapshot before modifying
+        std::vector<UniValue> snapshot = vec;
+        for (const auto& v : snapshot) {
+            push_back(v);
+        }
+    } else {
+        values.insert(values.end(), vec.begin(), vec.end());
+    }
 }
 
 void UniValue::pushKVEnd(std::string key, UniValue val)
@@ -142,13 +150,16 @@ void UniValue::pushKVs(const UniValue& obj)
     // Check if obj may be invalidated by modifications to this object.
     // This happens when: (1) obj is this (self-merge), or
     // (2) obj is a sub-object/array within this object's values (nested alias).
-    // We detect case (2) by checking if obj's address falls within our values vector.
+    // We detect case (2) by checking if obj's address matches any of our values.
     bool may_alias = (&obj == this);
     if (!may_alias && typ == VOBJ) {
-        // Check if obj is one of our values (address falls within values vector range)
-        const UniValue* values_begin = values.data();
-        const UniValue* values_end = values.data() + values.size();
-        may_alias = (&obj >= values_begin && &obj < values_end);
+        // Check if obj is one of our values by direct comparison (not relational pointer arithmetic)
+        for (const auto& v : values) {
+            if (&obj == &v) {
+                may_alias = true;
+                break;
+            }
+        }
     }
 
     if (may_alias) {

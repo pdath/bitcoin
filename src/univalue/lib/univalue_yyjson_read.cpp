@@ -260,7 +260,7 @@ bool UniValue::read(std::string_view str_in) {
             break;
         case YYJSON_TYPE_BOOL:
             typ = VBOOL;
-            val = yyjson_mut_get_bool(m_yyjson_node) ? "1" : "0";
+            val = yyjson_mut_get_bool(m_yyjson_node) ? "1" : "";
             break;
         case YYJSON_TYPE_RAW:
         case YYJSON_TYPE_NUM: {

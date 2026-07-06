@@ -138,7 +138,13 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
                 }
                 if (pretty) s += "\n";
             }
-            if (pretty) s += indentStr;
+            if (pretty) {
+                if (indentLevel > 0) {
+                    std::string closeIndentStr;
+                    ::indentStr(prettyIndent, indentLevel - 1, closeIndentStr);
+                    s += closeIndentStr;
+                }
+            }
             s += "]";
             return s;
         }
@@ -161,7 +167,13 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
                 }
                 if (pretty) s += "\n";
             }
-            if (pretty) s += indentStr;
+            if (pretty) {
+                if (indentLevel > 0) {
+                    std::string closeIndentStr;
+                    ::indentStr(prettyIndent, indentLevel - 1, closeIndentStr);
+                    s += closeIndentStr;
+                }
+            }
             s += "}";
             return s;
         }

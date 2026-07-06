@@ -1153,10 +1153,13 @@ void UniValue::pushKVs(const UniValue& obj) {
     // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
     bool may_alias = (&obj == this);
     if (!may_alias && typ == VOBJ) {
-        // Check if obj is one of our values (address falls within values vector range)
-        const UniValue* values_begin = values.data();
-        const UniValue* values_end = values.data() + values.size();
-        may_alias = (&obj >= values_begin && &obj < values_end);
+        // Check if obj is one of our values by direct comparison (not relational pointer arithmetic)
+        for (const auto& v : values) {
+            if (&obj == &v) {
+                may_alias = true;
+                break;
+            }
+        }
     }
 
     if (may_alias) {
@@ -1274,8 +1277,17 @@ bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTy
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
     checkType(VARR);
-    for (const auto& v : vec) {
-        push_back(v);
+    // Guard against self-append: if vec is our own values, take a snapshot before modifying
+    if (&vec == &values) {
+        // Self-append case: vec is our own values vector, must snapshot before modifying
+        std::vector<UniValue> snapshot = vec;
+        for (const auto& v : snapshot) {
+            push_back(v);
+        }
+    } else {
+        for (const auto& v : vec) {
+            push_back(v);
+        }
     }
 }
 
