@@ -1144,9 +1144,8 @@ void UniValue::pushKVs(const UniValue& obj) {
     std::vector<UniValue> source_values = obj.values;
     for (size_t i = 0; i < source_keys.size(); ++i)
         pushKV(std::move(source_keys[i]), std::move(source_values[i]));
-    
-    m_materialized = false;
 }
+
 /**
  * @brief Access an object value by key
  *
