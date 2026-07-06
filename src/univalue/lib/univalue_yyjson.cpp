@@ -944,7 +944,6 @@ void UniValue::pushKV(std::string key, UniValue val) {
         }
         
         // Check if we need to use legacy path (val is a container without yyjson tree)
-        use_legacy_path = false;
         if (val.typ == VOBJ || val.typ == VARR) {
             if (!val.m_yyjson_doc || !val.m_yyjson_node) {
                 // Container without yyjson tree - use legacy path
@@ -1027,7 +1026,6 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
     
     if (m_yyjson_doc && m_yyjson_node) {
         // Check if we need to use legacy path (val is a container without yyjson tree)
-        use_legacy_path = false;
         if (val.typ == VOBJ || val.typ == VARR) {
             if (!val.m_yyjson_doc || !val.m_yyjson_node) {
                 // Container without yyjson tree - use legacy path
