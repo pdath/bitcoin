@@ -1155,8 +1155,9 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
 /**
  * @brief Merge all key-value pairs from another object into this one
  *
- * If the other object has a yyjson tree, iterates directly over it without
- * materializing for maximum efficiency.
+ * Takes a snapshot of the source object's keys/values to handle any self-aliasing
+ * or descendant aliasing cases safely, ensuring stable iteration even if pushKVEnd
+ * mutates values.
  *
  * @param obj The object to merge from (must be an object)
  */
@@ -1169,56 +1170,13 @@ void UniValue::pushKVs(const UniValue& obj) {
         obj.materialize();
     }
 
-    // Only take snapshots when obj may alias this object or any of its descendants
-    // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
-    bool may_alias = (&obj == this);
-    if (!may_alias && typ == VOBJ) {
-        // Check if obj can be reached through this object's values (including nested descendants)
-        // Use a simple depth-limited BFS to detect descendant aliasing
-        // Limit depth to 8 levels to prevent excessive recursion while catching common cases
-        const int MAX_DEPTH = 8;
-        std::vector<std::pair<const UniValue*, int>> to_check;
-        to_check.emplace_back(this, 0);
-
-        while (!may_alias && !to_check.empty()) {
-            const auto [current, depth] = to_check.back();
-            to_check.pop_back();
-
-            if (depth >= MAX_DEPTH) {
-                continue; // Skip to prevent excessive recursion
-            }
-
-            if (current->typ == VOBJ || current->typ == VARR) {
-                // Ensure the container is materialized for safe iteration
-                // Use const_cast since materialize() is safe on const objects due to mutable
-                if (current->m_yyjson_doc && current->m_yyjson_node && !current->m_materialized) {
-                    const_cast<UniValue*>(current)->materialize();
-                }
-
-                // Check direct children
-                for (const auto& v : current->values) {
-                    if (&obj == &v) {
-                        may_alias = true;
-                        break;
-                    }
-                    // Add this child to the check queue for nested descendant checking
-                    to_check.emplace_back(&v, depth + 1);
-                }
-            }
-        }
-    }
-
-    if (may_alias) {
-        // obj aliases this or is a nested value: must snapshot to ensure stable iteration
-        std::vector<std::string> source_keys = obj.keys;
-        std::vector<UniValue> source_values = obj.values;
-        for (size_t i = 0; i < source_keys.size(); ++i)
-            pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
-    } else {
-        // obj is independent: iterate directly to avoid unnecessary copy overhead
-        for (size_t i = 0; i < obj.keys.size(); ++i)
-            pushKVEnd(obj.keys[i], obj.values[i]);
-    }
+    // Always take a snapshot of the source object's keys/values to handle
+    // any self-aliasing or descendant aliasing cases safely.
+    // This ensures stable iteration even if pushKVEnd mutates values.
+    std::vector<std::string> source_keys = obj.keys;
+    std::vector<UniValue> source_values = obj.values;
+    for (size_t i = 0; i < source_keys.size(); ++i)
+        pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
 }
 
 /**
