@@ -14,6 +14,9 @@
  * @brief Get the keys of this object
  *
  * Triggers materialization if the object hasn't been materialized yet.
+ * Note: Uses const_cast to allow materialization in const context.
+ * This is safe because materialization only populates the keys/values cache
+ * and doesn't change the logical state of the object.
  *
  * @return Reference to the vector of object keys
  * @throws std::runtime_error if this is not an object
@@ -21,6 +24,10 @@
 const std::vector<std::string>& UniValue::getKeys() const {
     checkType(VOBJ);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     return keys;
@@ -30,6 +37,9 @@ const std::vector<std::string>& UniValue::getKeys() const {
  * @brief Get the values of this object or array
  *
  * Triggers materialization if the container hasn't been materialized yet.
+ * Note: Uses const_cast to allow materialization in const context.
+ * This is safe because materialization only populates the keys/values cache
+ * and doesn't change the logical state of the object.
  *
  * @return Reference to the vector of values
  * @throws std::runtime_error if this is not an object or array
@@ -38,6 +48,10 @@ const std::vector<UniValue>& UniValue::getValues() const {
     if (typ != VOBJ && typ != VARR)
         throw std::runtime_error("JSON value is not an object or array as expected");
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     return values;

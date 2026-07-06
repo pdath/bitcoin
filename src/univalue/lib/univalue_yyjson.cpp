@@ -120,7 +120,11 @@ const UniValue NullUniValue;
  */
 bool UniValue::isTrue() const {
     if (typ != VBOOL) return false;
-    if (!m_materialized) {
+    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     return val == "1";
@@ -136,7 +140,11 @@ bool UniValue::isTrue() const {
  */
 bool UniValue::isFalse() const {
     if (typ != VBOOL) return false;
-    if (!m_materialized) {
+    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     return val != "1";
@@ -293,18 +301,33 @@ UniValue::UniValue(const UniValue& other)
     
     // Deep copy the yyjson tree (for containers and parsed primitives that haven't been materialized)
     // For manually constructed primitives, they don't have documents, so just set to null
-    if (other.m_yyjson_doc && other.m_yyjson_node && !other.m_materialized) {
-        // Other has a document and hasn't been materialized - deep copy it using yyjson's optimized copy function
-        m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-        m_yyjson_node = (yyjson_val*)yyjson_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
-        if (!m_yyjson_node) {
-            // Copy failed, clean up the document we just created
-            m_yyjson_doc.reset();
+    if (typ == VARR || typ == VOBJ) {
+        // For containers: always ensure keys/values are populated for const-correctness
+        // This ensures that getKeys()/getValues() never need to modify a const object
+        if (other.m_materialized) {
+            // Other is already materialized, copy keys/values directly
+            keys = other.keys;
+            values = other.values;
+            m_materialized = true;
+        } else if (other.m_yyjson_doc && other.m_yyjson_node) {
+            // Other has yyjson state but is not materialized - we need to materialize it first
+            const_cast<UniValue*>(&other)->materialize();
+            // Now copy the materialized data
+            keys = other.keys;
+            values = other.values;
+            m_materialized = true;
         } else {
-            setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+            // Other has no yyjson state and is not materialized
+            // This shouldn't happen for valid objects, but handle it gracefully
+            keys = other.keys;
+            values = other.values;
+            m_materialized = true;
         }
+        // For containers, we don't need yyjson state since we have materialized keys/values
+        m_yyjson_doc = nullptr;
+        m_yyjson_node = nullptr;
     } else {
-        // Other doesn't have a document (primitive without doc) or has been materialized
+        // Primitive type - no document needed
         m_yyjson_doc = nullptr;
         m_yyjson_node = nullptr;
     }
@@ -372,24 +395,32 @@ UniValue& UniValue::operator=(const UniValue& other) {
         m_yyjson_node = nullptr;
         
         // Deep copy the yyjson tree (for containers and parsed primitives)
-        if (other.m_yyjson_doc && other.m_yyjson_node && !other.m_materialized) {
-            m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-            m_yyjson_node = (yyjson_val*)yyjson_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
-            if (!m_yyjson_node) {
-                // Copy failed, clean up the document we just created
-                m_yyjson_doc.reset();
+        if (other.typ == VARR || other.typ == VOBJ) {
+            // For containers: always ensure keys/values are populated for const-correctness
+            // This ensures that getKeys()/getValues() never need to modify a const object
+            if (other.m_materialized) {
+                // Other is already materialized, copy keys/values directly
+                keys = other.keys;
+                values = other.values;
+                m_materialized = true;
+            } else if (other.m_yyjson_doc && other.m_yyjson_node) {
+                // Other has yyjson state but is not materialized - we need to materialize it first
+                const_cast<UniValue*>(&other)->materialize();
+                // Now copy the materialized data
+                keys = other.keys;
+                values = other.values;
+                m_materialized = true;
             } else {
-                setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+                // Other doesn't have yyjson state, copy keys/values directly
+                keys = other.keys;
+                values = other.values;
+                m_materialized = true;
             }
+            // For containers, we don't need yyjson state since we have materialized keys/values
+            m_yyjson_doc = nullptr;
+            m_yyjson_node = nullptr;
         }
         // For primitives without documents, m_yyjson_doc and m_yyjson_node stay nullptr
-        
-        // For materialized containers, we've already copied keys/values above, so no need to clear
-        if (!m_materialized) {
-            // Clear existing container representation (will be lazily materialized if needed)
-            keys.clear();
-            values.clear();
-        }
     }
     return *this;
 }
@@ -833,6 +864,9 @@ void UniValue::materialize() const {
                 }
             }
             break;
+        default:
+            // Unknown type, mark as materialized but don't change the representation
+            break;
     }
     
     self->m_materialized = true;
@@ -852,7 +886,11 @@ void UniValue::materialize() const {
 bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
     if (typ != VOBJ) return false;
     
-    if (!m_materialized) {
+    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     
@@ -875,6 +913,10 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
  */
 const std::string& UniValue::getValStr() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     return val;
@@ -889,6 +931,10 @@ const std::string& UniValue::getValStr() const {
  */
 bool UniValue::empty() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        // Materialize on-demand. This is safe because:
+        // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
+        // 2. The original object was not declared as const (it was passed as const reference)
+        // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
     return values.empty();
