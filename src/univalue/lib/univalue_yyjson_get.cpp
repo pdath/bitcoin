@@ -24,13 +24,7 @@
  */
 const std::vector<std::string>& UniValue::getKeys() const {
     checkType(VOBJ);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        // Materialize on-demand. This is safe because:
-        // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
-        // 3. Materialization is idempotent - calling it multiple times has the same result
-        materialize();
-    }
+    materializeIfNeeded();
 
     return keys;
 }
@@ -49,13 +43,7 @@ const std::vector<std::string>& UniValue::getKeys() const {
 const std::vector<UniValue>& UniValue::getValues() const {
     if (typ != VOBJ && typ != VARR)
         throw std::runtime_error("JSON value is not an object or array as expected");
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        // Materialize on-demand. This is safe because:
-        // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
-        // 3. Materialization is idempotent - calling it multiple times has the same result
-        materialize();
-    }
+    materializeIfNeeded();
     return values;
 }
 
@@ -69,9 +57,7 @@ const std::vector<UniValue>& UniValue::getValues() const {
  */
 bool UniValue::get_bool() const {
     checkType(VBOOL);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materializeIfNeeded();
     return val == "1";
 }
 
@@ -85,9 +71,7 @@ bool UniValue::get_bool() const {
  */
 const std::string& UniValue::get_str() const {
     checkType(VSTR);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materializeIfNeeded();
     return val;
 }
 
@@ -102,9 +86,7 @@ const std::string& UniValue::get_str() const {
  */
 double UniValue::get_real() const {
     checkType(VNUM);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materializeIfNeeded();
     double result;
     if (!ParseDouble(val, &result)) {
         throw std::runtime_error("JSON number out of range for double");
@@ -122,9 +104,7 @@ double UniValue::get_real() const {
  */
 const UniValue& UniValue::get_obj() const {
     checkType(VOBJ);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materializeIfNeeded();
     return *this;
 }
 
@@ -138,9 +118,7 @@ const UniValue& UniValue::get_obj() const {
  */
 const UniValue& UniValue::get_array() const {
     checkType(VARR);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materializeIfNeeded();
     return *this;
 }
 
@@ -154,9 +132,7 @@ const UniValue& UniValue::get_array() const {
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
     if (typ != VOBJ) return;
     
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materializeIfNeeded();
     
     for (size_t i = 0; i < keys.size(); ++i) {
         kv[keys[i]] = values[i];

@@ -555,7 +555,7 @@ void UniValue::setInt(int64_t val_) {
 void UniValue::setFloat(double val_) {
     clear();
     std::ostringstream ss;
-    ss << std::setprecision(15) << val_;
+    ss << std::setprecision(16) << val_;
     std::string str = ss.str();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
@@ -752,6 +752,23 @@ void UniValue::materialize() const {
     }
     
     m_materialized = true;
+}
+
+/**
+ * @brief Centralized guard to materialize on-demand if needed
+ * 
+ * Checks if the object has yyjson state and is not yet materialized,
+ * then calls materialize(). This centralizes the repeated guard pattern.
+ * 
+ * This is safe because:
+ * 1. We only populate the cache (val/keys/values) which is logically equivalent to the yyjson tree
+ * 2. The cache members are mutable when WITH_YYJSON=ON, so this can be done in const context
+ * 3. Materialization is idempotent - calling it multiple times has the same result
+ */
+void UniValue::materializeIfNeeded() const {
+    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        materialize();
+    }
 }
 
 

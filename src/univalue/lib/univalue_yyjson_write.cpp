@@ -125,21 +125,15 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
         case UniValue::VARR: {
             if (uv.empty()) {
                 if (!pretty) return "[]";
-                std::string s = "[\n";
-                if (indentLevel > 0) {
-                    std::string closeIndentStr;
-                    ::indentStr(prettyIndent, indentLevel - 1, closeIndentStr);
-                    s += closeIndentStr;
-                }
-                s += "]";
-                return s;
+                // Legacy format: [\n] without extra indent for empty arrays
+                return "[\n]";
             }
             std::string s = "[";
             if (pretty) s += "\n";
             const auto& values = uv.getValues();
             for (size_t i = 0; i < values.size(); ++i) {
                 if (pretty) s += indentStr;
-                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel + 1);
+                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel);
                 if (i < values.size() - 1) {
                     s += ",";
                 }
@@ -158,14 +152,8 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
         case UniValue::VOBJ: {
             if (uv.empty()) {
                 if (!pretty) return "{}";
-                std::string s = "{\n";
-                if (indentLevel > 0) {
-                    std::string closeIndentStr;
-                    ::indentStr(prettyIndent, indentLevel - 1, closeIndentStr);
-                    s += closeIndentStr;
-                }
-                s += "}";
-                return s;
+                // Legacy format: {\n} without extra indent for empty objects
+                return "{\n}";
             }
             std::string s = "{";
             if (pretty) s += "\n";
@@ -175,7 +163,7 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
                 if (pretty) s += indentStr;
                 s += '"' + json_escape(keys[i]) + std::string("\":");
                 if (pretty) s += " ";
-                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel + 1);
+                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel);
                 if (i < keys.size() - 1) {
                     s += ",";
                 }

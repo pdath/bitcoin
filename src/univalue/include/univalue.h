@@ -169,6 +169,7 @@ private:
     mutable bool m_materialized{false};                //!< Whether lazy caches (val/keys/values) have been populated
 
     void materialize() const;              // Populate lazy caches from yyjson
+    void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
     static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr
 #endif
 
@@ -206,14 +207,30 @@ void UniValue::push_backV(It first, It last)
 {
     checkType(VARR);
 #ifdef WITH_YYJSON
-    // Snapshot the input range to avoid iterator invalidation from self-append
+    // Check if the input range comes from this->values (self-append case)
     // This handles cases like arr.push_backV(arr.getValues().begin(), arr.getValues().end())
-    std::vector<UniValue> snapshot;
-    for (auto it = first; it != last; ++it) {
-        snapshot.push_back(*it);
+    bool self_append = false;
+    if (!values.empty() && first != last) {
+        // If the first element of the range has the same address as values data, it's likely self-append
+        if (&(*first) >= &values[0] && &(*first) < &values[0] + values.size()) {
+            self_append = true;
+        }
     }
-    for (const auto& v : snapshot) {
-        push_back(v);
+    
+    if (self_append) {
+        // Self-append case: take a snapshot before modifying to avoid iterator invalidation
+        std::vector<UniValue> snapshot;
+        for (auto it = first; it != last; ++it) {
+            snapshot.push_back(*it);
+        }
+        for (const auto& v : snapshot) {
+            push_back(v);
+        }
+    } else {
+        // Safe to iterate directly without snapshot
+        for (auto it = first; it != last; ++it) {
+            push_back(*it);
+        }
     }
 #else
     values.insert(values.end(), first, last);
