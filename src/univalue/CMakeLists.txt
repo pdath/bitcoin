@@ -43,10 +43,9 @@ if(WITH_YYJSON)
         PUBLIC
           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/yyjson>
     )
+    target_compile_features(univalue PRIVATE c_std_17)
 endif()
 target_link_libraries(univalue PRIVATE core_interface)
-
-target_compile_features(univalue PRIVATE cxx_std_17)
 
 if(BUILD_TESTS)
   add_executable(unitester
