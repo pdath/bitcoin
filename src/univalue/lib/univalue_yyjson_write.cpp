@@ -214,7 +214,7 @@ static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int pret
  * @param prettyIndent Indentation level for pretty printing (0 for compact, 2 for 2-space pretty)
  * @return JSON string representation
  */
-std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
+std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indentLevel) const {
     // Fast path for VNUM: return val directly (already properly formatted)
     if (typ == VNUM) {
         return val;
@@ -247,14 +247,15 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
         doc_to_use = m_yyjson_doc.get();
     }
 
-    // Use yyjson_mut_write for standard indentation (0 or 2)
-    if (can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2)) {
+    // Use yyjson_mut_write for standard indentation (0 or 2) and when indentLevel is 1 (root level)
+    // For non-standard indentation or non-root levels, fall back to writeYyjsonValueInternal
+    if (can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2) && indentLevel == 1) {
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
         size_t len = 0;
         char* output = yyjson_mut_write_opts(doc_to_use, flags, nullptr, &len, nullptr);
         if (!output) {
             // Handle write failure by falling through to alternative path
-            return writeYyjsonValueInternal(*this, prettyIndent, 0);
+            return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
         }
         std::string result(output, len);
         free(output);
@@ -266,9 +267,9 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
         return writeYyjsonStrPrimitive(*this, prettyIndent);
     }
 
-    // Fallback for custom indentation levels or other cases
-    // Use writeYyjsonValueInternal which handles all formatting correctly
-    return writeYyjsonValueInternal(*this, prettyIndent, 0);
+    // Fallback for custom indentation levels, non-root levels, or other cases
+    // Use writeYyjsonValueInternal which handles all formatting correctly with indentLevel
+    return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
 }
 
 /**
@@ -281,7 +282,12 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
  * @param indentLevel Current nesting level (unused in this implementation, kept for API compatibility)
  * @return JSON string representation
  */
-std::string UniValue::write(unsigned int prettyIndent, [[maybe_unused]] unsigned int indentLevel) const {
-    // Delegate to writeYyjson which handles the optimized path
-    return writeYyjson(prettyIndent);
+std::string UniValue::write(unsigned int prettyIndent, unsigned int indentLevel) const {
+    // Handle indentLevel the same way as the non-yyjson backend:
+    // if indentLevel is 0, treat it as 1 for the first level when pretty printing
+    unsigned int modIndent = indentLevel;
+    if (modIndent == 0) {
+        modIndent = 1;
+    }
+    return writeYyjson(prettyIndent, modIndent);
 }

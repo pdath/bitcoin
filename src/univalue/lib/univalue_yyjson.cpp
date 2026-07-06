@@ -31,9 +31,9 @@ bool UniValue::isTrue() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         // Materialize on-demand. This is safe because:
         // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
+        // 2. The cache members are mutable, so this can be done in const context
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return val == "1";
 }
@@ -51,9 +51,9 @@ bool UniValue::isFalse() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         // Materialize on-demand. This is safe because:
         // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
+        // 2. The cache members are mutable, so this can be done in const context
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return val != "1";
 }
@@ -209,7 +209,8 @@ UniValue::UniValue(const UniValue& other)
             m_materialized = true;
         } else if (other.m_yyjson_doc && other.m_yyjson_node) {
             // Other has yyjson state but is not materialized - we need to materialize it first
-            const_cast<UniValue*>(&other)->materialize();
+            // materialize() is const and can be called on const objects due to mutable members
+            other.materialize();
             // Now copy the materialized data
             keys = other.keys;
             values = other.values;
@@ -289,7 +290,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
                 m_materialized = true;
             } else if (other.m_yyjson_doc && other.m_yyjson_node) {
                 // Other has yyjson state but is not materialized - we need to materialize it first
-                const_cast<UniValue*>(&other)->materialize();
+                other.materialize();
                 // Now copy the materialized data
                 keys = other.keys;
                 values = other.values;
@@ -638,111 +639,110 @@ void UniValue::materialize() const {
     if (m_materialized) return;
     if (!m_yyjson_doc || !m_yyjson_node) return;
     
-    UniValue* self = const_cast<UniValue*>(this);
-    yyjson_type ytype = yyjson_get_type(m_yyjson_node);
+    yyjson_type ytype = yyjson_mut_get_type(m_yyjson_node);
     
     switch (ytype) {
         case YYJSON_TYPE_NULL:
-            self->typ = VNULL;
+            typ = VNULL;
             // Clear yyjson state for primitives after materialization
-            self->m_yyjson_doc.reset();
-            self->m_yyjson_node = nullptr;
+            m_yyjson_doc.reset();
+            m_yyjson_node = nullptr;
             break;
         case YYJSON_TYPE_BOOL:
-            self->typ = VBOOL;
-            // yyjson_get_bool works with both immutable and mutable values
-            if (yyjson_get_bool(m_yyjson_node)) {
-                self->val = "1";
+            typ = VBOOL;
+            // yyjson_mut_get_bool for mutable values
+            if (yyjson_mut_get_bool(m_yyjson_node)) {
+                val = "1";
             } else {
-                self->val.clear();  // Empty string for false
+                val.clear();  // Empty string for false
             }
             // Clear yyjson state for primitives after materialization
-            self->m_yyjson_doc.reset();
-            self->m_yyjson_node = nullptr;
+            m_yyjson_doc.reset();
+            m_yyjson_node = nullptr;
             break;
         case YYJSON_TYPE_RAW:
         case YYJSON_TYPE_NUM: {
-            const char* raw = yyjson_get_raw(m_yyjson_node);
-            size_t len = yyjson_get_len(m_yyjson_node);
-            self->typ = VNUM;
+            const char* raw = yyjson_mut_get_raw(m_yyjson_node);
+            size_t len = yyjson_mut_get_len(m_yyjson_node);
+            typ = VNUM;
             if (raw && len > 0) {
-                self->val.assign(raw, len);
+                val.assign(raw, len);
             } else {
-                self->val = "0"; // Fallback for invalid numbers
+                val = "0"; // Fallback for invalid numbers
             }
             // Clear yyjson state for primitives after materialization
-            self->m_yyjson_doc.reset();
-            self->m_yyjson_node = nullptr;
+            m_yyjson_doc.reset();
+            m_yyjson_node = nullptr;
             break;
         }
         case YYJSON_TYPE_STR: {
-            const char* str = yyjson_get_str(m_yyjson_node);
-            size_t len = yyjson_get_len(m_yyjson_node);
-            self->typ = VSTR;
+            const char* str = yyjson_mut_get_str(m_yyjson_node);
+            size_t len = yyjson_mut_get_len(m_yyjson_node);
+            typ = VSTR;
             if (str && len > 0) {
-                self->val.assign(str, len);
+                val.assign(str, len);
             } else {
-                self->val = ""; // Fallback for invalid strings
+                val = ""; // Fallback for invalid strings
             }
             // Clear yyjson state for primitives after materialization
-            self->m_yyjson_doc.reset();
-            self->m_yyjson_node = nullptr;
+            m_yyjson_doc.reset();
+            m_yyjson_node = nullptr;
             break;
         }
         case YYJSON_TYPE_ARR:
-            self->typ = VARR;
+            typ = VARR;
             {
                 // Clear existing representation
-                self->values.clear();
+                values.clear();
                 
                 // Optimization: Pre-allocate capacity to avoid reallocations
-                size_t arr_size = yyjson_arr_size(self->m_yyjson_node);
-                self->values.reserve(arr_size);
+                size_t arr_size = yyjson_mut_arr_size(m_yyjson_node);
+                values.reserve(arr_size);
                 
                 size_t idx, max;
                 yyjson_mut_val *item;
                 // Use mutable foreach for mutable documents
-                yyjson_mut_arr_foreach(self->m_yyjson_node, idx, max, item) {
+                yyjson_mut_arr_foreach(m_yyjson_node, idx, max, item) {
                     UniValue new_val;
                     new_val.clear();  // Clear to avoid memory leak from default constructor
-                    new_val.m_yyjson_doc = self->m_yyjson_doc;
+                    new_val.m_yyjson_doc = m_yyjson_doc;
                     new_val.m_yyjson_node = item;
                     new_val.materialize();
-                    self->values.push_back(std::move(new_val));
+                    values.push_back(std::move(new_val));
                 }
             }
             break;
         case YYJSON_TYPE_OBJ:
-            self->typ = VOBJ;
+            typ = VOBJ;
             {
                 // Clear existing representation
-                self->keys.clear();
-                self->values.clear();
+                keys.clear();
+                values.clear();
                 
                 // Optimization: Pre-allocate capacity to avoid reallocations
-                size_t obj_size = yyjson_obj_size(self->m_yyjson_node);
-                self->keys.reserve(obj_size);
-                self->values.reserve(obj_size);
+                size_t obj_size = yyjson_mut_obj_size(m_yyjson_node);
+                keys.reserve(obj_size);
+                values.reserve(obj_size);
                 
                 // Use mutable iterator for mutable documents
                 yyjson_mut_val *key, *v;
                 yyjson_mut_obj_iter iter;
-                if (yyjson_mut_obj_iter_init(self->m_yyjson_node, &iter)) {
+                if (yyjson_mut_obj_iter_init(m_yyjson_node, &iter)) {
                     while ((key = yyjson_mut_obj_iter_next(&iter))) {
                         v = yyjson_mut_obj_iter_get_val(key);
-                        const char* kstr = yyjson_get_str((yyjson_val*)key);
-                        size_t klen = yyjson_get_len((yyjson_val*)key);
+                        const char* kstr = yyjson_mut_get_str(key);
+                        size_t klen = yyjson_mut_get_len(key);
                         std::string k;
                         if (kstr && klen > 0) {
                             k.assign(kstr, klen);
                         }
                         UniValue new_val;
                         new_val.clear();  // Clear to avoid memory leak from default constructor
-                        new_val.m_yyjson_doc = self->m_yyjson_doc;
+                        new_val.m_yyjson_doc = m_yyjson_doc;
                         new_val.m_yyjson_node = v;
                         new_val.materialize();
-                        self->keys.push_back(std::move(k));
-                        self->values.push_back(std::move(new_val));
+                        keys.push_back(std::move(k));
+                        values.push_back(std::move(new_val));
                     }
                 }
             }
@@ -752,7 +752,7 @@ void UniValue::materialize() const {
             break;
     }
     
-    self->m_materialized = true;
+    m_materialized = true;
 }
 
 
@@ -772,9 +772,9 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         // Materialize on-demand. This is safe because:
         // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
+        // 2. The cache members are mutable, so this can be done in const context
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     
     for (size_t i = 0; i < keys.size(); ++i) {
@@ -798,9 +798,9 @@ const std::string& UniValue::getValStr() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         // Materialize on-demand. This is safe because:
         // 1. We only populate the cache (val) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
+        // 2. The cache members are mutable, so this can be done in const context
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return val;
 }
@@ -816,9 +816,9 @@ bool UniValue::empty() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
         // Materialize on-demand. This is safe because:
         // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
-        // 2. The original object was not declared as const (it was passed as const reference)
+        // 2. The cache members are mutable, so this can be done in const context
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return values.empty();
 }
@@ -833,7 +833,7 @@ bool UniValue::empty() const {
  */
 size_t UniValue::size() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     // For containers, return the materialized size
     // Note: After materialization, values.size() should match the yyjson container size
@@ -874,7 +874,7 @@ void UniValue::push_back(UniValue val) {
     bool use_legacy_path = false;
     
     // Add to yyjson array (primary storage) or to materialized representation
-    if (m_yyjson_doc && m_yyjson_node && yyjson_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
+    if (m_yyjson_doc && m_yyjson_node && yyjson_mut_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
         // Check if we need to use legacy path (val is a container without yyjson tree)
         if (val.typ == VOBJ || val.typ == VARR) {
             if (!val.m_yyjson_doc || !val.m_yyjson_node) {
@@ -1147,21 +1147,21 @@ void UniValue::pushKVs(const UniValue& obj) {
 
     // Materialize obj if needed
     if (!obj.m_materialized) {
-        const_cast<UniValue&>(obj).materialize();
+        obj.materialize();
     }
     
     // Only take snapshots when obj aliases this (self-merge case) to avoid iterator invalidation
     // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
     if (&obj == this) {
-        // Self-merge: must snapshot to ensure stable iteration while pushKV modifies this
+        // Self-merge: must snapshot to ensure stable iteration while pushKVEnd modifies this
         std::vector<std::string> source_keys = obj.keys;
         std::vector<UniValue> source_values = obj.values;
         for (size_t i = 0; i < source_keys.size(); ++i)
-            pushKV(std::move(source_keys[i]), std::move(source_values[i]));
+            pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
     } else {
         // Normal merge: iterate directly from obj
         for (size_t i = 0; i < obj.keys.size(); ++i)
-            pushKV(obj.keys[i], obj.values[i]);
+            pushKVEnd(obj.keys[i], obj.values[i]);
     }
 }
 
@@ -1202,7 +1202,7 @@ const UniValue& UniValue::operator[](size_t index) const {
     if (typ != VOBJ && typ != VARR)
         return NullUniValue;
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     if (index < values.size()) {
         return values[index];
@@ -1242,7 +1242,7 @@ bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTy
     if (typ != VOBJ) return false;
     
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     
     for (const auto& [key, expectedType] : memberTypes) {
