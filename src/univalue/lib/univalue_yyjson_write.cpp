@@ -263,7 +263,16 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
 
     // Use yyjson_mut_write for standard indentation (0 or 2) and when indentLevel is 1 (root level)
     // For non-standard indentation or non-root levels, fall back to writeYyjsonValueInternal
-    if (can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2) && indentLevel == 1) {
+    // Also fall back for empty containers when pretty printing to preserve legacy formatting
+    bool use_fast_path = can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2) && indentLevel == 1;
+    if (use_fast_path) {
+        // Don't use fast path for empty containers with pretty printing to preserve legacy [\n] and {\n} format
+        if (prettyIndent && (typ == VARR || typ == VOBJ) && empty()) {
+            use_fast_path = false;
+        }
+    }
+    
+    if (use_fast_path) {
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
         size_t len = 0;
         char* output = yyjson_mut_write_opts(doc_to_use, flags, nullptr, &len, nullptr);
