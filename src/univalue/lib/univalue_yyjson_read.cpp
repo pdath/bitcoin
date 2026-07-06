@@ -137,7 +137,11 @@ static size_t getMaxDepth(yyjson_val* val) {
             
             size_t child_depth = entry.depth + 1;
             while ((item = yyjson_arr_iter_next(&iter))) {
-                stack.push_back({item, child_depth, false});
+                // Only push container children (arrays and objects) onto stack
+                yyjson_type child_type = yyjson_get_type(item);
+                if (child_type == YYJSON_TYPE_ARR || child_type == YYJSON_TYPE_OBJ) {
+                    stack.push_back({item, child_depth, false});
+                }
             }
         } else if (type == YYJSON_TYPE_OBJ) {
             yyjson_val* key, *value;
@@ -147,7 +151,11 @@ static size_t getMaxDepth(yyjson_val* val) {
             size_t child_depth = entry.depth + 1;
             while ((key = yyjson_obj_iter_next(&iter))) {
                 value = yyjson_obj_iter_get_val(key);
-                stack.push_back({value, child_depth, false});
+                // Only push container children (arrays and objects) onto stack
+                yyjson_type child_type = yyjson_get_type(value);
+                if (child_type == YYJSON_TYPE_ARR || child_type == YYJSON_TYPE_OBJ) {
+                    stack.push_back({value, child_depth, false});
+                }
             }
         }
     }
@@ -223,7 +231,7 @@ bool UniValue::read(std::string_view str_in) {
     
     // Store document with automatic cleanup using shared_ptr
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(mut_doc, yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)mut_root;
+    m_yyjson_node = mut_root;
     
     // Free the immutable document from yyjson_read
     yyjson_doc_free(doc);

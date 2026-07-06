@@ -97,9 +97,9 @@ void UniValue::yyjson_doc_deleter(yyjson_mut_doc* doc) {
  * @param doc The yyjson mutable document
  * @param node The root node to set
  */
-static void setYyjsonRoot(yyjson_mut_doc* doc, yyjson_val* node) {
+static void setYyjsonRoot(yyjson_mut_doc* doc, yyjson_mut_val* node) {
     if (doc && node) {
-        yyjson_mut_doc_set_root(doc, (yyjson_mut_val*)node);
+        yyjson_mut_doc_set_root(doc, node);
     }
 }
 /**
@@ -137,10 +137,10 @@ UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
         
         switch (type) {
             case VOBJ:
-                m_yyjson_node = (yyjson_val*)yyjson_mut_obj(m_yyjson_doc.get());
+                m_yyjson_node = yyjson_mut_obj(m_yyjson_doc.get());
                 break;
             case VARR:
-                m_yyjson_node = (yyjson_val*)yyjson_mut_arr(m_yyjson_doc.get());
+                m_yyjson_node = yyjson_mut_arr(m_yyjson_doc.get());
                 break;
             default:
                 // Should not happen
@@ -497,7 +497,7 @@ void UniValue::setNumStr(std::string str) {
     
     clear();
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
+    m_yyjson_node = yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
     setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
     typ = VNUM;
     val = str;  // Store number string for fast access
@@ -589,7 +589,7 @@ void UniValue::setStr(std::string str) {
 void UniValue::setArray() {
     clear();
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_arr(m_yyjson_doc.get());
+    m_yyjson_node = yyjson_mut_arr(m_yyjson_doc.get());
     setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
     typ = VARR;
     // Don't populate val/keys/values for containers - use lazy materialization
@@ -604,7 +604,7 @@ void UniValue::setArray() {
 void UniValue::setObject() {
     clear();
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = (yyjson_val*)yyjson_mut_obj(m_yyjson_doc.get());
+    m_yyjson_node = yyjson_mut_obj(m_yyjson_doc.get());
     setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
     typ = VOBJ;
     // Don't populate val/keys/values for containers - use lazy materialization
@@ -702,11 +702,11 @@ void UniValue::materialize() const {
                 size_t idx, max;
                 yyjson_mut_val *item;
                 // Use mutable foreach for mutable documents
-                yyjson_mut_arr_foreach((yyjson_mut_val*)self->m_yyjson_node, idx, max, item) {
+                yyjson_mut_arr_foreach(self->m_yyjson_node, idx, max, item) {
                     UniValue new_val;
                     new_val.clear();  // Clear to avoid memory leak from default constructor
                     new_val.m_yyjson_doc = self->m_yyjson_doc;
-                    new_val.m_yyjson_node = (yyjson_val*)item;
+                    new_val.m_yyjson_node = item;
                     new_val.materialize();
                     self->values.push_back(std::move(new_val));
                 }
@@ -727,7 +727,7 @@ void UniValue::materialize() const {
                 // Use mutable iterator for mutable documents
                 yyjson_mut_val *key, *v;
                 yyjson_mut_obj_iter iter;
-                if (yyjson_mut_obj_iter_init((yyjson_mut_val*)self->m_yyjson_node, &iter)) {
+                if (yyjson_mut_obj_iter_init(self->m_yyjson_node, &iter)) {
                     while ((key = yyjson_mut_obj_iter_next(&iter))) {
                         v = yyjson_mut_obj_iter_get_val(key);
                         const char* kstr = yyjson_get_str((yyjson_val*)key);
@@ -739,7 +739,7 @@ void UniValue::materialize() const {
                         UniValue new_val;
                         new_val.clear();  // Clear to avoid memory leak from default constructor
                         new_val.m_yyjson_doc = self->m_yyjson_doc;
-                        new_val.m_yyjson_node = (yyjson_val*)v;
+                        new_val.m_yyjson_node = v;
                         new_val.materialize();
                         self->keys.push_back(std::move(k));
                         self->values.push_back(std::move(new_val));
@@ -886,8 +886,8 @@ void UniValue::push_back(UniValue val) {
         if (!use_legacy_path) {
             yyjson_mut_val* new_val = nullptr;
             if (val.m_yyjson_doc && val.m_yyjson_node) {
-                // val has its own yyjson tree - use yyjson's optimized copy function
-                new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                // val has its own yyjson tree - use yyjson's optimized copy function for mutable values
+                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add to array
                     return;
@@ -986,9 +986,9 @@ void UniValue::pushKV(std::string key, UniValue val) {
             // Optimization: Handle values with yyjson tree (both materialized and non-materialized)
             yyjson_mut_val* new_val = nullptr;
             if (val.m_yyjson_doc && val.m_yyjson_node) {
-                // val has its own yyjson tree - use yyjson's optimized copy function
+                // val has its own yyjson tree - use yyjson's optimized copy function for mutable values
                 // This works for both materialized and non-materialized containers
-                new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add the pair
                     return;
@@ -1077,9 +1077,9 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             yyjson_mut_val* new_val = nullptr;
             
             if (val.m_yyjson_doc && val.m_yyjson_node) {
-                // val has its own yyjson tree - use yyjson's optimized copy function
+                // val has its own yyjson tree - use yyjson's optimized copy function for mutable values
                 // This works for both materialized and non-materialized containers
-                new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add the pair
                     return;

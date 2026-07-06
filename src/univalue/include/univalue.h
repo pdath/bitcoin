@@ -152,7 +152,7 @@ private:
 #ifdef WITH_YYJSON
     // yyjson primary storage
     mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc; //!< Shared pointer to yyjson mutable document (primary storage)
-    mutable yyjson_val* m_yyjson_node{nullptr};        //!< Pointer to the root node in the yyjson tree
+    mutable yyjson_mut_val* m_yyjson_node{nullptr};    //!< Pointer to the root node in the yyjson tree
     mutable bool m_materialized{false};                //!< Whether lazy caches (val/keys/values) have been populated
 
     void materialize() const;              // Populate lazy caches from yyjson
@@ -193,6 +193,12 @@ void UniValue::push_backV(It first, It last)
 {
     checkType(VARR);
 #ifdef WITH_YYJSON
+    // Reserve space if we can determine the range size to avoid repeated reallocations
+    // This matches the behavior of values.insert() in the non-WITH_YYJSON version
+    auto dist = std::distance(first, last);
+    if (dist > 0) {
+        values.reserve(values.size() + static_cast<size_t>(dist));
+    }
     for (auto it = first; it != last; ++it) {
         push_back(*it);
     }

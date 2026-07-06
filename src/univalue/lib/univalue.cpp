@@ -139,11 +139,19 @@ void UniValue::pushKVs(const UniValue& obj)
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
-    // Take snapshots to safely handle self-merge (obj == *this)
-    std::vector<std::string> source_keys = obj.keys;
-    std::vector<UniValue> source_values = obj.values;
-    for (size_t i = 0; i < source_keys.size(); i++)
-        pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
+    // Only take snapshots when obj aliases this (self-merge case) to avoid iterator invalidation
+    // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
+    if (&obj == this) {
+        // Self-merge: must snapshot to ensure stable iteration while pushKVEnd modifies this
+        std::vector<std::string> source_keys = keys;
+        std::vector<UniValue> source_values = values;
+        for (size_t i = 0; i < source_keys.size(); i++)
+            pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
+    } else {
+        // Normal merge: iterate directly from obj
+        for (size_t i = 0; i < obj.keys.size(); i++)
+            pushKVEnd(obj.keys[i], obj.values[i]);
+    }
 }
 
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const
