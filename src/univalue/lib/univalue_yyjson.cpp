@@ -1145,17 +1145,24 @@ void UniValue::pushKVs(const UniValue& obj) {
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
-    // Materialize obj if needed and take a snapshot for iteration
-    // This is critical when obj is *this (self-merge) to avoid iterator invalidation
+    // Materialize obj if needed
     if (!obj.m_materialized) {
         const_cast<UniValue&>(obj).materialize();
     }
-    // Take a snapshot of the source keys and values to ensure stable iteration
-    // even when obj is *this and pushKV modifies this
-    std::vector<std::string> source_keys = obj.keys;
-    std::vector<UniValue> source_values = obj.values;
-    for (size_t i = 0; i < source_keys.size(); ++i)
-        pushKV(std::move(source_keys[i]), std::move(source_values[i]));
+    
+    // Only take snapshots when obj aliases this (self-merge case) to avoid iterator invalidation
+    // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
+    if (&obj == this) {
+        // Self-merge: must snapshot to ensure stable iteration while pushKV modifies this
+        std::vector<std::string> source_keys = obj.keys;
+        std::vector<UniValue> source_values = obj.values;
+        for (size_t i = 0; i < source_keys.size(); ++i)
+            pushKV(std::move(source_keys[i]), std::move(source_values[i]));
+    } else {
+        // Normal merge: iterate directly from obj
+        for (size_t i = 0; i < obj.keys.size(); ++i)
+            pushKV(obj.keys[i], obj.values[i]);
+    }
 }
 
 /**

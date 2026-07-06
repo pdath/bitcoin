@@ -48,10 +48,6 @@ if(BUILD_TESTS)
   add_executable(unitester
     test/unitester.cpp
   )
-  if(WITH_YYJSON)
-    target_compile_definitions(unitester PRIVATE WITH_YYJSON)
-    target_include_directories(unitester PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  endif()
   include(TargetDataSources)
   target_json_data_sources(unitester
     test/fail1.json
@@ -120,10 +116,6 @@ if(BUILD_TESTS)
   )
 
   add_executable(object test/object.cpp)
-  if(WITH_YYJSON)
-    target_compile_definitions(object PRIVATE WITH_YYJSON)
-    target_include_directories(object PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  endif()
   target_link_libraries(object
     PRIVATE
       core_interface

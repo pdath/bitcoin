@@ -106,8 +106,12 @@ static std::string postProcessYyjsonOutput(std::string result) {
  */
 static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel) {
     const bool pretty = prettyIndent > 0;
-    std::string indentStr = pretty ? std::string(indentLevel * prettyIndent, ' ') : "";
-    std::string nextIndentStr = pretty ? std::string((indentLevel + 1) * prettyIndent, ' ') : "";
+    std::string indentStr;
+    std::string nextIndentStr;
+    if (pretty) {
+        ::indentStr(prettyIndent, indentLevel, indentStr);
+        ::indentStr(prettyIndent, indentLevel + 1, nextIndentStr);
+    }
     
     switch (uv.getType()) {
         case UniValue::VNULL:
