@@ -931,6 +931,9 @@ void UniValue::push_back(UniValue val) {
     // 1. The target array doesn't have yyjson tree
     // 2. The value is a container without yyjson tree (after materializing if needed)
     values.push_back(std::move(val));
+    // Clear yyjson state to ensure writeYyjson() uses legacy representation
+    m_yyjson_doc.reset();
+    m_yyjson_node = nullptr;
     m_materialized = true;  // Legacy representation is now up to date
 }
 
@@ -1030,6 +1033,9 @@ void UniValue::pushKV(std::string key, UniValue val) {
         keys.push_back(std::move(key));
         values.push_back(std::move(val));
     }
+    // Clear yyjson state to ensure writeYyjson() uses legacy representation
+    m_yyjson_doc.reset();
+    m_yyjson_node = nullptr;
     m_materialized = true;  // Legacy representation is now up to date
 }
 
@@ -1118,6 +1124,9 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
     // 2. The value is a container without yyjson tree (after materializing if needed)
     keys.push_back(std::move(key));
     values.push_back(std::move(val));
+    // Clear yyjson state to ensure writeYyjson() uses legacy representation
+    m_yyjson_doc.reset();
+    m_yyjson_node = nullptr;
     m_materialized = true;  // Legacy representation is now up to date
 }
 
