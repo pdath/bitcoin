@@ -172,8 +172,11 @@ static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int pret
     yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
     size_t len = 0;
     char* output = yyjson_mut_write_opts(temp_doc, flags, nullptr, &len, nullptr);
-    std::string result(output, len);
-    free(output);
+    std::string result;
+    if (output) {
+        result = std::string(output, len);
+        free(output);
+    }
     yyjson_mut_doc_free(temp_doc);
 
     // Use the shared post-processing function to handle DEL and \uXXXX
@@ -233,6 +236,10 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent) const {
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
         size_t len = 0;
         char* output = yyjson_mut_write_opts(doc_to_use, flags, nullptr, &len, nullptr);
+        if (!output) {
+            // Handle write failure by falling through to alternative path
+            return writeYyjsonValueInternal(*this, prettyIndent, 0);
+        }
         std::string result(output, len);
         free(output);
         return postProcessYyjsonOutput(std::move(result));

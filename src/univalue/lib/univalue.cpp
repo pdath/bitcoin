@@ -139,8 +139,11 @@ void UniValue::pushKVs(const UniValue& obj)
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
-    for (size_t i = 0; i < obj.keys.size(); i++)
-        pushKVEnd(obj.keys.at(i), obj.values.at(i));
+    // Take snapshots to safely handle self-merge (obj == *this)
+    std::vector<std::string> source_keys = obj.keys;
+    std::vector<UniValue> source_values = obj.values;
+    for (size_t i = 0; i < source_keys.size(); i++)
+        pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
 }
 
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const

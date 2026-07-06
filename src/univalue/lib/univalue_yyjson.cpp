@@ -873,7 +873,6 @@ void UniValue::push_back(UniValue val) {
     // Add to yyjson array (primary storage) or to materialized representation
     if (m_yyjson_doc && m_yyjson_node && yyjson_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
         // Check if we need to use legacy path (val is a container without yyjson tree)
-        use_legacy_path = false;
         if (val.typ == VOBJ || val.typ == VARR) {
             if (!val.m_yyjson_doc || !val.m_yyjson_node) {
                 // Container without yyjson tree - use legacy path
@@ -916,15 +915,23 @@ void UniValue::push_back(UniValue val) {
                 return;
             }
             yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val);
+            // Successfully added to yyjson tree, set m_materialized to false and return
+            m_materialized = false;
+            return;
+        } else {
+            // use_legacy_path is true: container without yyjson tree
+            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
+            if (m_yyjson_doc && m_yyjson_node) {
+                materialize();
+            }
         }
-        // Only mark as unmaterialized if we successfully added to the yyjson tree
-        m_materialized = false;
     }
     // Fallback to legacy representation
-    if (use_legacy_path || !m_yyjson_doc || !m_yyjson_node || m_materialized) {
-        values.push_back(std::move(val));
-    }
-    // Don't add to legacy representation - will be materialized on demand from yyjson tree
+    // This is used when:
+    // 1. The target array doesn't have yyjson tree
+    // 2. The value is a container without yyjson tree (after materializing if needed)
+    values.push_back(std::move(val));
+    m_materialized = true;  // Legacy representation is now up to date
 }
 
 /**
@@ -964,6 +971,10 @@ void UniValue::pushKV(std::string key, UniValue val) {
         
         if (use_legacy_path) {
             // Can't add container without yyjson tree to yyjson object
+            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
+            if (m_yyjson_doc && m_yyjson_node) {
+                materialize();
+            }
             // Fall through to legacy representation
         } else {
             // Optimization: Handle values with yyjson tree (both materialized and non-materialized)
@@ -1003,23 +1014,23 @@ void UniValue::pushKV(std::string key, UniValue val) {
             if (new_val) {
                 yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
             }
+            // Successfully added to yyjson tree, set m_materialized to false
+            // and return (no need for legacy fallback)
+            m_materialized = false;
+            return;
         }
     }
     // Fallback to legacy representation
     // This is used when:
     // 1. The target object doesn't have yyjson tree
-    // 2. The value is a container without yyjson tree
-    if (use_legacy_path || !m_yyjson_doc || !m_yyjson_node) {
-        if (m_materialized && findKey(key, idx)) {
-            values[idx] = std::move(val);
-        } else {
-            keys.push_back(std::move(key));
-            values.push_back(std::move(val));
-        }
+    // 2. The value is a container without yyjson tree (after materializing if needed)
+    if (m_materialized && findKey(key, idx)) {
+        values[idx] = std::move(val);
+    } else {
+        keys.push_back(std::move(key));
+        values.push_back(std::move(val));
     }
-    // Always set m_materialized to false after modification
-    // This ensures next access materializes from yyjson tree if present
-    m_materialized = false;
+    m_materialized = true;  // Legacy representation is now up to date
 }
 
 /**
@@ -1090,16 +1101,24 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             if (new_val) {
                 yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
             }
+            // Successfully added to yyjson tree, set m_materialized to false and return
+            m_materialized = false;
+            return;
+        } else {
+            // use_legacy_path is true: container without yyjson tree
+            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
+            if (m_yyjson_doc && m_yyjson_node) {
+                materialize();
+            }
         }
     }
     // Fallback to legacy representation
-    if (use_legacy_path || !m_yyjson_doc || !m_yyjson_node) {
-        keys.push_back(std::move(key));
-        values.push_back(std::move(val));
-    }
-    // Always set m_materialized to false after modification
-    // This ensures next access materializes from yyjson tree if present
-    m_materialized = false;
+    // This is used when:
+    // 1. The target object doesn't have yyjson tree
+    // 2. The value is a container without yyjson tree (after materializing if needed)
+    keys.push_back(std::move(key));
+    values.push_back(std::move(val));
+    m_materialized = true;  // Legacy representation is now up to date
 }
 
 /**
@@ -1114,12 +1133,17 @@ void UniValue::pushKVs(const UniValue& obj) {
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
-    // Materialize obj if needed and iterate over legacy representation
+    // Materialize obj if needed and take a snapshot for iteration
+    // This is critical when obj is *this (self-merge) to avoid iterator invalidation
     if (!obj.m_materialized) {
         const_cast<UniValue&>(obj).materialize();
     }
-    for (size_t i = 0; i < obj.keys.size(); ++i)
-        pushKV(obj.keys.at(i), obj.values.at(i));
+    // Take a snapshot of the source keys and values to ensure stable iteration
+    // even when obj is *this and pushKV modifies this
+    std::vector<std::string> source_keys = obj.keys;
+    std::vector<UniValue> source_values = obj.values;
+    for (size_t i = 0; i < source_keys.size(); ++i)
+        pushKV(std::move(source_keys[i]), std::move(source_values[i]));
     
     m_materialized = false;
 }
