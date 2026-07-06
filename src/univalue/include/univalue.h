@@ -206,10 +206,14 @@ void UniValue::push_backV(It first, It last)
 {
     checkType(VARR);
 #ifdef WITH_YYJSON
-    // For non-forward iterators, we cannot safely call std::distance as it may
-    // consume single-pass iterators. Just iterate directly to maintain compatibility.
+    // Snapshot the input range to avoid iterator invalidation from self-append
+    // This handles cases like arr.push_backV(arr.getValues().begin(), arr.getValues().end())
+    std::vector<UniValue> snapshot;
     for (auto it = first; it != last; ++it) {
-        push_back(*it);
+        snapshot.push_back(*it);
+    }
+    for (const auto& v : snapshot) {
+        push_back(v);
     }
 #else
     values.insert(values.end(), first, last);
