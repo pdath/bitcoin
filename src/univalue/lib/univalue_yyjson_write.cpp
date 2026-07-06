@@ -44,30 +44,42 @@ static std::string postProcessYyjsonOutput(std::string result) {
             // Replace DEL with \u007f
             final_result += "\\u007f";
             ++i;
-        } else if (c == '\\' && i + 1 < result.size() && result[i+1] == 'u') {
-            // Found start of \uXXXX sequence
-            
-            // Check if we have a complete \uXXXX sequence
-            if (i + UNICODE_ESCAPE_LENGTH <= result.size()) {
-                // Process complete \uXXXX sequence, converting uppercase hex to lowercase
+        } else if (c == '\\' && i + 1 < result.size()) {
+            // Check for escaped backslash (\\\\) first
+            if (result[i+1] == '\\') {
+                // Literal escaped backslash - copy both characters as-is
                 final_result += '\\';
-                final_result += 'u';
+                final_result += '\\';
+                i += 2;
+            } else if (result[i+1] == 'u') {
+                // Found start of \uXXXX sequence
                 
-                // Process all 4 hex digits, converting uppercase to lowercase
-                for (size_t j = HEX_START; j < UNICODE_ESCAPE_LENGTH; j++) {
-                    char hex_char = result[i + j];
-                    if (hex_char >= 'A' && hex_char <= 'F') {
-                        final_result += (hex_char - 'A' + 'a');
-                    } else {
-                        // For lowercase hex, digits, or invalid chars: copy as-is
-                        // (lowercase hex and digits don't need conversion)
-                        final_result += hex_char;
+                // Check if we have a complete \uXXXX sequence
+                if (i + UNICODE_ESCAPE_LENGTH <= result.size()) {
+                    // Process complete \uXXXX sequence, converting uppercase hex to lowercase
+                    final_result += '\\';
+                    final_result += 'u';
+                    
+                    // Process all 4 hex digits, converting uppercase to lowercase
+                    for (size_t j = HEX_START; j < UNICODE_ESCAPE_LENGTH; j++) {
+                        char hex_char = result[i + j];
+                        if (hex_char >= 'A' && hex_char <= 'F') {
+                            final_result += (hex_char - 'A' + 'a');
+                        } else {
+                            // For lowercase hex, digits, or invalid chars: copy as-is
+                            // (lowercase hex and digits don't need conversion)
+                            final_result += hex_char;
+                        }
                     }
+                    i += UNICODE_ESCAPE_LENGTH; // Skip the entire \uXXXX sequence
+                } else {
+                    // Incomplete \u sequence at end of string - copy characters as-is
+                    // Don't interpret as escape sequence
+                    final_result += c;
+                    ++i;
                 }
-                i += UNICODE_ESCAPE_LENGTH; // Skip the entire \uXXXX sequence
             } else {
-                // Incomplete \u sequence at end of string - copy characters as-is
-                // Don't interpret as escape sequence
+                // Other escape sequences (like \n, \t, etc.) - copy as-is
                 final_result += c;
                 ++i;
             }
