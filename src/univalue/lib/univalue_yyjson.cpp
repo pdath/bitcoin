@@ -344,12 +344,19 @@ UniValue& UniValue::operator=(const UniValue& other) {
         typ = other.typ;
         
         // For primitives, copy val directly (it's already populated)
-        // For containers, don't copy val/keys/values - they'll be lazily materialized if needed
+        // For containers, copy keys/values if materialized, otherwise lazy materialization will handle it
         if (other.typ != VARR && other.typ != VOBJ) {
             val = other.val;
             m_materialized = true;
         } else {
-            m_materialized = false;
+            // Container: copy keys and values if materialized, otherwise they'll be lazily materialized
+            if (other.m_materialized) {
+                keys = other.keys;
+                values = other.values;
+                m_materialized = true;
+            } else {
+                m_materialized = false;
+            }
         }
         
         // Clear existing yyjson state
@@ -369,9 +376,12 @@ UniValue& UniValue::operator=(const UniValue& other) {
         }
         // For primitives without documents, m_yyjson_doc and m_yyjson_node stay nullptr
         
-        // Clear existing container representation (will be lazily materialized if needed)
-        keys.clear();
-        values.clear();
+        // For materialized containers, we've already copied keys/values above, so no need to clear
+        if (!m_materialized) {
+            // Clear existing container representation (will be lazily materialized if needed)
+            keys.clear();
+            values.clear();
+        }
     }
     return *this;
 }
