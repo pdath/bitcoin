@@ -16,98 +16,6 @@
 
 
 
-/**
-/**
- * @brief Deep copy a yyjson value from source to target document
- *
- * Creates a copy of the yyjson value tree in the target document's memory pool.
- * This is necessary because yyjson values cannot be shared between documents.
- * Each UniValue that owns a yyjson tree must have its own document.
- *
- * Uses mutable iterators (yyjson_mut_arr_iter, yyjson_mut_obj_iter) for better
- * performance when copying from mutable documents (the common case in this implementation).
- *
- * @param src_val Source yyjson value to copy (can be from immutable or mutable document)
- * @param target_doc Target mutable document to copy into
- * @return New yyjson value in target document, or nullptr on failure
- */
-static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* target_doc) {
-    if (!src_val || !target_doc) return nullptr;
-    
-    yyjson_type type = yyjson_get_type(src_val);
-    
-    // Fast path for primitives - direct creation without recursion
-    switch (type) {
-        case YYJSON_TYPE_NULL:
-            return yyjson_mut_null(target_doc);
-        case YYJSON_TYPE_BOOL:
-            return yyjson_mut_bool(target_doc, yyjson_get_bool(src_val));
-        case YYJSON_TYPE_NUM:
-        case YYJSON_TYPE_RAW: {
-            const char* raw = yyjson_get_raw(src_val);
-            size_t len = yyjson_get_len(src_val);
-            if (raw && len > 0) {
-                return yyjson_mut_rawncpy(target_doc, raw, len);
-            }
-            // Fallback for invalid nodes - should not occur in practice
-            return yyjson_mut_null(target_doc);
-        }
-        case YYJSON_TYPE_STR: {
-            const char* str = yyjson_get_str(src_val);
-            size_t len = yyjson_get_len(src_val);
-            return yyjson_mut_strncpy(target_doc, str, len);
-        }
-        
-        // Container types - optimized copying
-        case YYJSON_TYPE_ARR: {
-            yyjson_mut_val* arr = yyjson_mut_arr(target_doc);
-            if (!arr) return nullptr;
-            
-            // Use mutable iterator to traverse source array
-            yyjson_mut_val *item;
-            yyjson_mut_arr_iter miter;
-            if (yyjson_mut_arr_iter_init((yyjson_mut_val*)src_val, &miter)) {
-                while ((item = yyjson_mut_arr_iter_next(&miter))) {
-                    // Use yyjson's optimized copy function for each array element
-                    yyjson_mut_val* copied = yyjson_val_mut_copy(target_doc, (yyjson_val*)item);
-                    if (copied) {
-                        yyjson_mut_arr_append(arr, copied);
-                    }
-                }
-            }
-            return arr;
-        }
-        
-        case YYJSON_TYPE_OBJ: {
-            yyjson_mut_val* obj = yyjson_mut_obj(target_doc);
-            if (!obj) return nullptr;
-            
-            // Use mutable iterator to traverse source object
-            yyjson_mut_val *key, *val;
-            yyjson_mut_obj_iter miter;
-            if (yyjson_mut_obj_iter_init((yyjson_mut_val*)src_val, &miter)) {
-                while ((key = yyjson_mut_obj_iter_next(&miter))) {
-                    val = yyjson_mut_obj_iter_get_val(key);
-                    const char* kstr = yyjson_get_str((yyjson_val*)key);
-                    size_t klen = yyjson_get_len((yyjson_val*)key);
-                    if (kstr && klen > 0) {
-                        yyjson_mut_val* new_key = yyjson_mut_strncpy(target_doc, kstr, klen);
-                        // Use yyjson's optimized copy function for each object value
-                        yyjson_mut_val* new_val = yyjson_val_mut_copy(target_doc, (yyjson_val*)val);
-                        if (new_key && new_val) {
-                            yyjson_mut_obj_add(obj, new_key, new_val);
-                        }
-                    }
-                }
-            }
-            return obj;
-        }
-        
-        default:
-            return nullptr;
-    }
-}
-
 const UniValue NullUniValue;
 
 /**
@@ -1118,7 +1026,6 @@ void UniValue::pushKV(std::string key, UniValue val) {
 void UniValue::pushKVEnd(std::string key, UniValue val) {
     checkType(VOBJ);
     
-    size_t idx;
     if (m_yyjson_doc && m_yyjson_node) {
         // Optimized path: assume keys are unique, skip duplicate checking
         // Create key first, then value - if either fails, we return without adding
