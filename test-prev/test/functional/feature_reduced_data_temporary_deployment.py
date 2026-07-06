@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/feature_reduced_data_temporary_deployment.py

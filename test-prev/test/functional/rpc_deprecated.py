@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/rpc_deprecated.py

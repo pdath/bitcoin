@@ -1,0 +1,1 @@
+/usr/bin/cc -O2 -g  CMakeFiles/ctime_tests.dir/ctime_tests.c.o -o ../bin/ctime_tests  ../lib/libsecp256k1.a 

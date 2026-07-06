@@ -29,9 +29,9 @@ static constexpr size_t MAX_JSON_DEPTH = 512;
  */
 static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* target_doc) {
     if (!src_val) return nullptr;
-    
+
     yyjson_type type = yyjson_get_type(src_val);
-    
+
     switch (type) {
         case YYJSON_TYPE_NULL:
             return yyjson_mut_null(target_doc);
@@ -110,45 +110,45 @@ static yyjson_mut_val* copyYyjsonValue(yyjson_val* src_val, yyjson_mut_doc* targ
  */
 static size_t getMaxDepth(yyjson_val* val) {
     if (!val) return 0;
-    
+
     size_t max_depth = 0;
-    
+
     // Stack entry for iterative DFS traversal
     struct StackEntry {
         yyjson_val* val;      ///< Current value being processed
         size_t depth;         ///< Current depth in tree
         bool children_processed;  ///< Whether children have been enqueued
     };
-    
+
     std::vector<StackEntry> stack;
     stack.push_back({val, 0, false});
-    
+
     while (!stack.empty()) {
         StackEntry& entry = stack.back();
-        
+
         if (entry.children_processed) {
             // Already processed children, pop from stack
             stack.pop_back();
             continue;
         }
-        
+
         // Mark as processed
         entry.children_processed = true;
-        
+
         yyjson_type type = yyjson_get_type(entry.val);
-        
+
         // Update max_depth for container nodes only
         if (type == YYJSON_TYPE_ARR || type == YYJSON_TYPE_OBJ) {
             if (entry.depth > max_depth) {
                 max_depth = entry.depth;
             }
         }
-        
+
         if (type == YYJSON_TYPE_ARR) {
             yyjson_val* item;
             yyjson_arr_iter iter;
             yyjson_arr_iter_init(entry.val, &iter);
-            
+
             size_t child_depth = entry.depth + 1;
             while ((item = yyjson_arr_iter_next(&iter))) {
                 // Only push container children (arrays and objects) onto stack
@@ -161,7 +161,7 @@ static size_t getMaxDepth(yyjson_val* val) {
             yyjson_val* key, *value;
             yyjson_obj_iter iter;
             yyjson_obj_iter_init(entry.val, &iter);
-            
+
             size_t child_depth = entry.depth + 1;
             while ((key = yyjson_obj_iter_next(&iter))) {
                 value = yyjson_obj_iter_get_val(key);
@@ -173,7 +173,7 @@ static size_t getMaxDepth(yyjson_val* val) {
             }
         }
     }
-    
+
     return max_depth;
 }
 
@@ -194,7 +194,7 @@ bool UniValue::read(std::string_view str_in) {
 
     // yyjson_read requires non-const char*, so make a mutable copy
     std::string str_copy(str_in);
-    
+
     // Parse with yyjson: NUMBER_AS_RAW preserves exact number strings,
     // STOP_WHEN_DONE stops at first non-JSON token
     yyjson_read_flag flags = YYJSON_READ_NUMBER_AS_RAW | YYJSON_READ_STOP_WHEN_DONE;
@@ -230,7 +230,7 @@ bool UniValue::read(std::string_view str_in) {
         yyjson_doc_free(doc);
         return false;
     }
-    
+
     // yyjson_read returns an immutable doc, but we need a mutable doc for consistency.
     // Create a new mutable document and copy the tree.
     yyjson_mut_doc* mut_doc = yyjson_mut_doc_new(nullptr);
@@ -242,14 +242,14 @@ bool UniValue::read(std::string_view str_in) {
         return false;
     }
     yyjson_mut_doc_set_root(mut_doc, mut_root);
-    
+
     // Store document with automatic cleanup using shared_ptr
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(mut_doc, yyjson_doc_deleter);
     m_yyjson_node = mut_root;
-    
+
     // Free the immutable document from yyjson_read
     yyjson_doc_free(doc);
-    
+
     // Set the type based on the root value.
     // Parsed primitives (numbers, booleans, strings) are materialized immediately
     // because they're accessed frequently and materialization is cheap.
@@ -298,7 +298,7 @@ bool UniValue::read(std::string_view str_in) {
             typ = VOBJ;
             break;
     }
-    
+
     // Primitives are materialized, containers are not (lazy materialization)
     m_materialized = (typ != VARR && typ != VOBJ);
 

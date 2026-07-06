@@ -131,9 +131,9 @@ const UniValue& UniValue::get_array() const {
  */
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
     if (typ != VOBJ) return;
-    
+
     materializeIfNeeded();
-    
+
     for (size_t i = 0; i < keys.size(); ++i) {
         kv[keys[i]] = values[i];
     }

@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/mining_getblocktemplate_longpoll.py

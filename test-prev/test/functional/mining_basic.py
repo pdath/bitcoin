@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/mining_basic.py

@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/data/__init__.py

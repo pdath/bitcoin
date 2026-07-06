@@ -1,0 +1,2 @@
+/usr/bin/ar qc libunivalue.a CMakeFiles/univalue.dir/lib/univalue_common.cpp.o CMakeFiles/univalue.dir/lib/univalue_yyjson.cpp.o CMakeFiles/univalue.dir/lib/univalue_yyjson_get.cpp.o CMakeFiles/univalue.dir/lib/univalue_yyjson_read.cpp.o CMakeFiles/univalue.dir/lib/univalue_yyjson_write.cpp.o CMakeFiles/univalue.dir/yyjson/yyjson.c.o
+/usr/bin/ranlib libunivalue.a

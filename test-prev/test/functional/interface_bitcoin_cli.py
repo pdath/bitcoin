@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/interface_bitcoin_cli.py

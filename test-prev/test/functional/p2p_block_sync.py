@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/p2p_block_sync.py

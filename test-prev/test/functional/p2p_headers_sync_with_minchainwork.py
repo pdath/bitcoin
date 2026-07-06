@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/p2p_headers_sync_with_minchainwork.py

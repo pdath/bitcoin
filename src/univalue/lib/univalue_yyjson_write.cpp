@@ -10,7 +10,7 @@
 #include <vector>
 
 /**
- * @brief Post-process yyjson output to match UniValue escaping behavior
+ * @brief Post-process yyjson output to match UniValue escaping behaviour
  *
  * Handles two differences:
  * 1. yyjson doesn't escape DEL (0x7f) by default, but UniValue does
@@ -19,7 +19,7 @@
  * Uses optimized single-pass processing to avoid multiple string scans.
  *
  * @param result The JSON string from yyjson_mut_write
- * @return Post-processed string matching UniValue behavior
+ * @return Post-processed string matching UniValue behaviour
  */
 static std::string postProcessYyjsonOutput(std::string result) {
     // Fast path: check if any processing is needed
@@ -36,10 +36,10 @@ static std::string postProcessYyjsonOutput(std::string result) {
 
     const size_t UNICODE_ESCAPE_LENGTH = 6; // Length of "\uXXXX" sequence
     const size_t HEX_START = 2; // Position of first hex digit in "\uXXXX"
-    
+
     for (size_t i = 0; i < result.size(); ) {
         unsigned char c = result[i];
-        
+
         if (c == 0x7f) {
             // Replace DEL with \u007f
             final_result += "\\u007f";
@@ -53,15 +53,15 @@ static std::string postProcessYyjsonOutput(std::string result) {
                 i += 2;
             } else if (result[i+1] == 'u') {
                 // Found start of \uXXXX sequence
-                
+
                 // Check if we have a complete \uXXXX sequence
                 if (i + UNICODE_ESCAPE_LENGTH <= result.size()) {
                     // Process complete \uXXXX sequence, converting uppercase hex to lowercase
                     final_result += '\\';
                     final_result += 'u';
-                    
+
                     // Process all 4 hex digits, converting uppercase to lowercase
-                    for (size_t j = HEX_START; j < UNICODE_ESCAPE_LENGTH; j++) {
+                    for (size_t j = HEX_START; j < UNICODE_ESCAPE_LENGTH; ++j) {
                         char hex_char = result[i + j];
                         if (hex_char >= 'A' && hex_char <= 'F') {
                             final_result += (hex_char - 'A' + 'a');
@@ -110,7 +110,7 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
     if (pretty) {
         ::indentStr(prettyIndent, indentLevel, indentStr);
     }
-    
+
     switch (uv.getType()) {
         case UniValue::VNULL:
             return "null";
@@ -235,7 +235,7 @@ static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int pret
  * - For VARR, VOBJ: Uses yyjson_mut_write directly on the document
  * - For custom indentation (prettyIndent != 0 && prettyIndent != 2): Falls back to writeYyjsonValueInternal
  *
- * Post-processing handles DEL (0x7f) character escaping to match UniValue behavior.
+ * Post-processing handles DEL (0x7f) character escaping to match UniValue behaviour.
  *
  * @param prettyIndent Indentation level for pretty printing (0 for compact, 2 for 2-space pretty)
  * @return JSON string representation
@@ -276,16 +276,16 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
     // Use yyjson_mut_write for standard indentation (0 or 2) and when indentLevel is 1 (root level)
     // For non-standard indentation or non-root levels, fall back to writeYyjsonValueInternal
     bool use_fast_path = can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2) && indentLevel == 1;
-    
+
     if (use_fast_path) {
-        // For empty containers, yyjson's pretty-printing indentation doesn't match the legacy behavior
+        // For empty containers, yyjson's pretty-printing indentation doesn't match the legacy behaviour
         // so fall back to writeYyjsonValueInternal for consistent formatting
         // Check for emptiness without calling empty() to avoid forcing materialization
         bool is_empty_container = false;
         if (typ == VARR || typ == VOBJ) {
             if (m_yyjson_node) {
                 // Check the yyjson tree directly to avoid materialization
-                is_empty_container = (yyjson_mut_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) 
+                is_empty_container = (yyjson_mut_get_type(m_yyjson_node) == YYJSON_TYPE_ARR)
                     ? (yyjson_mut_arr_size(m_yyjson_node) == 0)
                     : (yyjson_mut_obj_size(m_yyjson_node) == 0);
             } else {
@@ -296,7 +296,7 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
         if (is_empty_container) {
             return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
         }
-        
+
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
         size_t len = 0;
         char* output = yyjson_mut_write_opts(doc_to_use, flags, nullptr, &len, nullptr);
@@ -326,7 +326,7 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
  * for maximum performance when possible.
  *
  * @param prettyIndent Indentation level for pretty printing (0 for compact)
- * @param indentLevel Current nesting level (unused in this implementation, kept for API compatibility)
+ * @param indentLevel Current nesting level
  * @return JSON string representation
  */
 std::string UniValue::write(unsigned int prettyIndent, unsigned int indentLevel) const {

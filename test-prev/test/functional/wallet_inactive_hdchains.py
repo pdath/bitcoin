@@ -1,0 +1,1 @@
+/home/odroid/bitcoin/test/functional/wallet_inactive_hdchains.py
