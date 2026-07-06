@@ -319,11 +319,19 @@ UniValue::UniValue(const UniValue& other)
  * @param other The UniValue to move from
  */
 UniValue::UniValue(UniValue&& other) noexcept
-    : typ(other.typ), val(std::move(other.val)), keys(std::move(other.keys)), values(std::move(other.values)),
-      m_yyjson_doc(std::move(other.m_yyjson_doc)), 
-      m_yyjson_node(other.m_yyjson_node),
-      m_materialized(other.m_materialized)
 {
+    // Clear existing state first
+    clear();
+    
+    // Move all state from other
+    typ = other.typ;
+    val = std::move(other.val);
+    keys = std::move(other.keys);
+    values = std::move(other.values);
+    m_yyjson_doc = std::move(other.m_yyjson_doc);
+    m_yyjson_node = other.m_yyjson_node;
+    m_materialized = other.m_materialized;
+    
     // Reset other to safe state
     other.typ = VNULL;
     other.m_yyjson_node = nullptr;
@@ -397,6 +405,10 @@ UniValue& UniValue::operator=(const UniValue& other) {
  */
 UniValue& UniValue::operator=(UniValue&& other) noexcept {
     if (this != &other) {
+        // Clear existing state
+        clear();
+        
+        // Move all state from other
         typ = other.typ;
         val = std::move(other.val);
         keys = std::move(other.keys);
