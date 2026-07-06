@@ -30,6 +30,7 @@ const std::vector<std::string>& UniValue::getKeys() const {
         // 3. Materialization is idempotent - calling it multiple times has the same result
         const_cast<UniValue*>(this)->materialize();
     }
+
     return keys;
 }
 

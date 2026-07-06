@@ -191,25 +191,15 @@ UniValue::~UniValue() {}
 UniValue::UniValue(const UniValue& other)
     : typ(other.typ)
 {
+    // Initialize yyjson state to null (will be set below if needed)
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
+
     // For primitives, copy val directly (it's already populated)
-    // For containers, copy keys/values if they've been materialized, otherwise lazy materialization will handle it
     if (other.typ != VARR && other.typ != VOBJ) {
         val = other.val;
         m_materialized = true;
     } else {
-        // Container: copy keys and values if materialized, otherwise they'll be lazily materialized
-        if (other.m_materialized) {
-            keys = other.keys;
-            values = other.values;
-            m_materialized = true;
-        } else {
-            m_materialized = false;
-        }
-    }
-    
-    // Deep copy the yyjson tree (for containers and parsed primitives that haven't been materialized)
-    // For manually constructed primitives, they don't have documents, so just set to null
-    if (typ == VARR || typ == VOBJ) {
         // For containers: always ensure keys/values are populated for const-correctness
         // This ensures that getKeys()/getValues() never need to modify a const object
         if (other.m_materialized) {
@@ -232,10 +222,6 @@ UniValue::UniValue(const UniValue& other)
             m_materialized = true;
         }
         // For containers, we don't need yyjson state since we have materialized keys/values
-        m_yyjson_doc = nullptr;
-        m_yyjson_node = nullptr;
-    } else {
-        // Primitive type - no document needed
         m_yyjson_doc = nullptr;
         m_yyjson_node = nullptr;
     }
@@ -282,28 +268,15 @@ UniValue& UniValue::operator=(const UniValue& other) {
     if (this != &other) {
         typ = other.typ;
         
-        // For primitives, copy val directly (it's already populated)
-        // For containers, copy keys/values if materialized, otherwise lazy materialization will handle it
-        if (other.typ != VARR && other.typ != VOBJ) {
-            val = other.val;
-            m_materialized = true;
-        } else {
-            // Container: copy keys and values if materialized, otherwise they'll be lazily materialized
-            if (other.m_materialized) {
-                keys = other.keys;
-                values = other.values;
-                m_materialized = true;
-            } else {
-                m_materialized = false;
-            }
-        }
-        
         // Clear existing yyjson state
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
         
-        // Deep copy the yyjson tree (for containers and parsed primitives)
-        if (other.typ == VARR || other.typ == VOBJ) {
+        // For primitives, copy val directly (it's already populated)
+        if (other.typ != VARR && other.typ != VOBJ) {
+            val = other.val;
+            m_materialized = true;
+        } else {
             // For containers: always ensure keys/values are populated for const-correctness
             // This ensures that getKeys()/getValues() never need to modify a const object
             if (other.m_materialized) {
@@ -328,7 +301,6 @@ UniValue& UniValue::operator=(const UniValue& other) {
             m_yyjson_doc = nullptr;
             m_yyjson_node = nullptr;
         }
-        // For primitives without documents, m_yyjson_doc and m_yyjson_node stay nullptr
     }
     return *this;
 }
@@ -896,7 +868,7 @@ void UniValue::reserve(size_t new_cap) {
 void UniValue::push_back(UniValue val) {
     checkType(VARR);
     
-    // Add to yyjson array (primary storage)
+    // Add to yyjson array (primary storage) or to materialized representation
     if (m_yyjson_doc && m_yyjson_node && yyjson_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
         if (val.m_yyjson_doc && val.m_yyjson_node) {
             // val has its own yyjson tree - use yyjson's optimized copy function
@@ -937,6 +909,9 @@ void UniValue::push_back(UniValue val) {
         }
         // Only mark as unmaterialized if we successfully added to the yyjson tree
         m_materialized = false;
+    } else if (m_materialized) {
+        // Container is materialized (has keys/values), add to legacy representation
+        values.push_back(std::move(val));
     }
     // Don't add to legacy representation - will be materialized on demand from yyjson tree
 }
@@ -957,6 +932,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
     checkType(VOBJ);
     
     size_t idx;
+    bool use_legacy_path = false;
+    
     if (m_yyjson_doc && m_yyjson_node) {
         // Always update the yyjson tree (primary storage)
         // Create key first, then value - if either fails, we return without adding
@@ -966,52 +943,72 @@ void UniValue::pushKV(std::string key, UniValue val) {
             return;
         }
         
-        // Optimization: Handle primitives without documents directly
-        yyjson_mut_val* new_val = nullptr;
-        if (val.m_yyjson_doc && val.m_yyjson_node && !val.m_materialized) {
-            // val has its own yyjson tree and hasn't been materialized - use yyjson's optimized copy function
-            new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
-            if (!new_val) {
-                // Copy failed, cannot add the pair
-                return;
-            }
-        } else {
-            // val is a primitive without its own document
-            // Create yyjson node directly from val's value
-            switch (val.typ) {
-                case VNULL:
-                    new_val = yyjson_mut_null(m_yyjson_doc.get());
-                    break;
-                case VBOOL:
-                    new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
-                    break;
-                case VNUM:
-                    new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
-                    break;
-                case VSTR:
-                    new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
-                    break;
-                case VOBJ:
-                case VARR:
-                    // Containers should have their own documents - this is an error case
-                    // For now, just skip it
-                    return;
+        // Check if we need to use legacy path (val is a container without yyjson tree)
+        use_legacy_path = false;
+        if (val.typ == VOBJ || val.typ == VARR) {
+            if (!val.m_yyjson_doc || !val.m_yyjson_node) {
+                // Container without yyjson tree - use legacy path
+                use_legacy_path = true;
             }
         }
         
-        // Optimization: Use yyjson_mut_obj_put which handles both new and existing keys
-        // in a single operation, avoiding the separate check+remove+add pattern
-        if (new_val) {
-            yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
+        if (use_legacy_path) {
+            // Can't add container without yyjson tree to yyjson object
+            // Fall through to legacy representation
+        } else {
+            // Optimization: Handle values with yyjson tree (both materialized and non-materialized)
+            yyjson_mut_val* new_val = nullptr;
+            if (val.m_yyjson_doc && val.m_yyjson_node) {
+                // val has its own yyjson tree - use yyjson's optimized copy function
+                // This works for both materialized and non-materialized containers
+                new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                if (!new_val) {
+                    // Copy failed, cannot add the pair
+                    return;
+                }
+            } else {
+                // val is a primitive without its own document
+                // Create yyjson node directly from val's value
+                switch (val.typ) {
+                    case VNULL:
+                        new_val = yyjson_mut_null(m_yyjson_doc.get());
+                        break;
+                    case VBOOL:
+                        new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
+                        break;
+                    case VNUM:
+                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        break;
+                    case VSTR:
+                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        break;
+                    default:
+                        // Shouldn't happen for non-container types
+                        return;
+                }
+            }
+            
+            // Optimization: Use yyjson_mut_obj_put which handles both new and existing keys
+            // in a single operation, avoiding the separate check+remove+add pattern
+            if (new_val) {
+                yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
+            }
         }
-    } else {
-        // Fallback to legacy representation if this object doesn't have yyjson tree
+    }
+    // Fallback to legacy representation
+    // This is used when:
+    // 1. The target object doesn't have yyjson tree
+    // 2. The value is a container without yyjson tree
+    if (use_legacy_path || !m_yyjson_doc || !m_yyjson_node) {
         if (m_materialized && findKey(key, idx)) {
             values[idx] = std::move(val);
         } else {
-            pushKVEnd(std::move(key), std::move(val));
+            keys.push_back(std::move(key));
+            values.push_back(std::move(val));
         }
     }
+    // Always set m_materialized to false after modification
+    // This ensures next access materializes from yyjson tree if present
     m_materialized = false;
 }
 
@@ -1026,57 +1023,73 @@ void UniValue::pushKV(std::string key, UniValue val) {
 void UniValue::pushKVEnd(std::string key, UniValue val) {
     checkType(VOBJ);
     
+    bool use_legacy_path = false;
+    
     if (m_yyjson_doc && m_yyjson_node) {
-        // Optimized path: assume keys are unique, skip duplicate checking
-        // Create key first, then value - if either fails, we return without adding
-        yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
-        if (!new_key) {
-            // Key allocation failed, cannot add the pair
-            return;
+        // Check if we need to use legacy path (val is a container without yyjson tree)
+        use_legacy_path = false;
+        if (val.typ == VOBJ || val.typ == VARR) {
+            if (!val.m_yyjson_doc || !val.m_yyjson_node) {
+                // Container without yyjson tree - use legacy path
+                use_legacy_path = true;
+            }
         }
         
-        // Handle primitives without documents directly
-        yyjson_mut_val* new_val = nullptr;
-        if (val.m_yyjson_doc && val.m_yyjson_node && !val.m_materialized) {
-            // val has its own yyjson tree and hasn't been materialized - use yyjson's optimized copy function
-            new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
-            if (!new_val) {
-                // Copy failed, cannot add the pair
+        if (!use_legacy_path) {
+            // Optimized path: assume keys are unique, skip duplicate checking
+            // Create key first, then value - if either fails, we return without adding
+            yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
+            if (!new_key) {
+                // Key allocation failed, cannot add the pair
                 return;
             }
-        } else {
-            // val is a primitive without its own document
-            // Create yyjson node directly from val's value
-            switch (val.typ) {
-                case VNULL:
-                    new_val = yyjson_mut_null(m_yyjson_doc.get());
-                    break;
-                case VBOOL:
-                    new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
-                    break;
-                case VNUM:
-                    new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
-                    break;
-                case VSTR:
-                    new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
-                    break;
-                case VOBJ:
-                case VARR:
-                    // Containers should have their own documents - this is an error case
-                    // For now, just skip it
+            
+            // Handle values with yyjson tree (both materialized and non-materialized containers)
+            yyjson_mut_val* new_val = nullptr;
+            
+            if (val.m_yyjson_doc && val.m_yyjson_node) {
+                // val has its own yyjson tree - use yyjson's optimized copy function
+                // This works for both materialized and non-materialized containers
+                new_val = yyjson_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                if (!new_val) {
+                    // Copy failed, cannot add the pair
                     return;
+                }
+            } else {
+                // val is a primitive without its own document
+                // Create yyjson node directly from val's value
+                switch (val.typ) {
+                    case VNULL:
+                        new_val = yyjson_mut_null(m_yyjson_doc.get());
+                        break;
+                    case VBOOL:
+                        new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
+                        break;
+                    case VNUM:
+                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        break;
+                    case VSTR:
+                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        break;
+                    default:
+                        // Shouldn't happen for non-container types
+                        return;
+                }
+            }
+            
+            // Add to object - no duplicate key checking for better performance
+            if (new_val) {
+                yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
             }
         }
-        
-        // Add to object - no duplicate key checking for better performance
-        if (new_val) {
-            yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
-        }
-    } else {
-        // Fallback to legacy representation if this object doesn't have yyjson tree
+    }
+    // Fallback to legacy representation
+    if (use_legacy_path || !m_yyjson_doc || !m_yyjson_node) {
         keys.push_back(std::move(key));
         values.push_back(std::move(val));
     }
+    // Always set m_materialized to false after modification
+    // This ensures next access materializes from yyjson tree if present
     m_materialized = false;
 }
 
