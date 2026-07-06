@@ -139,16 +139,26 @@ void UniValue::pushKVs(const UniValue& obj)
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
-    // Only take snapshots when obj aliases this (self-merge case) to avoid iterator invalidation
-    // Otherwise, iterate directly from obj to avoid unnecessary copy overhead
-    if (&obj == this) {
-        // Self-merge: must snapshot to ensure stable iteration while pushKVEnd modifies this
-        std::vector<std::string> source_keys = keys;
-        std::vector<UniValue> source_values = values;
+    // Check if obj may be invalidated by modifications to this object.
+    // This happens when: (1) obj is this (self-merge), or
+    // (2) obj is a sub-object/array within this object's values (nested alias).
+    // We detect case (2) by checking if obj's address falls within our values vector.
+    bool may_alias = (&obj == this);
+    if (!may_alias && typ == VOBJ) {
+        // Check if obj is one of our values (address falls within values vector range)
+        const UniValue* values_begin = values.data();
+        const UniValue* values_end = values.data() + values.size();
+        may_alias = (&obj >= values_begin && &obj < values_end);
+    }
+
+    if (may_alias) {
+        // obj aliases this or is a nested value: must snapshot to ensure stable iteration
+        std::vector<std::string> source_keys = obj.keys;
+        std::vector<UniValue> source_values = obj.values;
         for (size_t i = 0; i < source_keys.size(); i++)
             pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
     } else {
-        // Normal merge: iterate directly from obj
+        // obj is independent: iterate directly to avoid unnecessary copy overhead
         for (size_t i = 0; i < obj.keys.size(); i++)
             pushKVEnd(obj.keys[i], obj.values[i]);
     }

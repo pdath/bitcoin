@@ -47,8 +47,11 @@ bool ParseDouble(const std::string& str, double *out)
     text.imbue(std::locale::classic());
     double result;
     text >> result;
-    if(out) *out = result;
-    return text.eof() && !text.fail();
+    bool success = text.eof() && !text.fail();
+    if (out && success) {
+        *out = result;
+    }
+    return success;
 }
 
 static const char *escapes[256] = {

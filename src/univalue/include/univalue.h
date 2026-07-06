@@ -144,9 +144,22 @@ public:
 #endif
 
 private:
+    // Common members - mutable only when WITH_YYJSON for lazy materialization
+#ifdef WITH_YYJSON
+    mutable
+#endif
     UniValue::VType typ;
+#ifdef WITH_YYJSON
+    mutable
+#endif
     std::string val;                       // numbers are stored as C++ strings
+#ifdef WITH_YYJSON
+    mutable
+#endif
     std::vector<std::string> keys;
+#ifdef WITH_YYJSON
+    mutable
+#endif
     std::vector<UniValue> values;
 
 #ifdef WITH_YYJSON
@@ -164,7 +177,7 @@ private:
 
 #ifdef WITH_YYJSON
     // yyjson-specific write method
-    std::string writeYyjson(unsigned int prettyIndent) const;
+    std::string writeYyjson(unsigned int prettyIndent, unsigned int indentLevel) const;
 #else
     // Original write methods
     void writeArray(unsigned int prettyIndent, unsigned int indentLevel, std::string& s) const;
@@ -193,12 +206,8 @@ void UniValue::push_backV(It first, It last)
 {
     checkType(VARR);
 #ifdef WITH_YYJSON
-    // Reserve space if we can determine the range size to avoid repeated reallocations
-    // This matches the behavior of values.insert() in the non-WITH_YYJSON version
-    auto dist = std::distance(first, last);
-    if (dist > 0) {
-        values.reserve(values.size() + static_cast<size_t>(dist));
-    }
+    // For non-forward iterators, we cannot safely call std::distance as it may
+    // consume single-pass iterators. Just iterate directly to maintain compatibility.
     for (auto it = first; it != last; ++it) {
         push_back(*it);
     }

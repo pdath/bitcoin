@@ -15,7 +15,7 @@
  * @brief Get the keys of this object
  *
  * Triggers materialization if the object hasn't been materialized yet.
- * Note: Uses const_cast to allow materialization in const context.
+ * Note: Materializes on-demand using mutable cache members when WITH_YYJSON=ON.
  * This is safe because materialization only populates the keys/values cache
  * and doesn't change the logical state of the object.
  *
@@ -29,7 +29,7 @@ const std::vector<std::string>& UniValue::getKeys() const {
         // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
         // 2. The original object was not declared as const (it was passed as const reference)
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
 
     return keys;
@@ -39,7 +39,7 @@ const std::vector<std::string>& UniValue::getKeys() const {
  * @brief Get the values of this object or array
  *
  * Triggers materialization if the container hasn't been materialized yet.
- * Note: Uses const_cast to allow materialization in const context.
+ * Note: Materializes on-demand using mutable cache members when WITH_YYJSON=ON.
  * This is safe because materialization only populates the keys/values cache
  * and doesn't change the logical state of the object.
  *
@@ -54,7 +54,7 @@ const std::vector<UniValue>& UniValue::getValues() const {
         // 1. We only populate the cache (keys/values) which is logically equivalent to the yyjson tree
         // 2. The original object was not declared as const (it was passed as const reference)
         // 3. Materialization is idempotent - calling it multiple times has the same result
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return values;
 }
@@ -70,7 +70,7 @@ const std::vector<UniValue>& UniValue::getValues() const {
 bool UniValue::get_bool() const {
     checkType(VBOOL);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return val == "1";
 }
@@ -86,7 +86,7 @@ bool UniValue::get_bool() const {
 const std::string& UniValue::get_str() const {
     checkType(VSTR);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return val;
 }
@@ -103,7 +103,7 @@ const std::string& UniValue::get_str() const {
 double UniValue::get_real() const {
     checkType(VNUM);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     double result;
     if (!ParseDouble(val, &result)) {
@@ -123,7 +123,7 @@ double UniValue::get_real() const {
 const UniValue& UniValue::get_obj() const {
     checkType(VOBJ);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return *this;
 }
@@ -139,7 +139,7 @@ const UniValue& UniValue::get_obj() const {
 const UniValue& UniValue::get_array() const {
     checkType(VARR);
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     return *this;
 }
@@ -155,7 +155,7 @@ void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
     if (typ != VOBJ) return;
     
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        const_cast<UniValue*>(this)->materialize();
+        materialize();
     }
     
     for (size_t i = 0; i < keys.size(); ++i) {
