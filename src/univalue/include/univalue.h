@@ -207,30 +207,14 @@ void UniValue::push_backV(It first, It last)
 {
     checkType(VARR);
 #ifdef WITH_YYJSON
-    // Check if the input range comes from this->values (self-append case)
+    // Always snapshot the input range to avoid iterator invalidation from self-append
     // This handles cases like arr.push_backV(arr.getValues().begin(), arr.getValues().end())
-    bool self_append = false;
-    if (!values.empty() && first != last) {
-        // If the first element of the range has the same address as values data, it's likely self-append
-        if (&(*first) >= &values[0] && &(*first) < &values[0] + values.size()) {
-            self_append = true;
-        }
+    std::vector<UniValue> snapshot;
+    for (auto it = first; it != last; ++it) {
+        snapshot.push_back(*it);
     }
-    
-    if (self_append) {
-        // Self-append case: take a snapshot before modifying to avoid iterator invalidation
-        std::vector<UniValue> snapshot;
-        for (auto it = first; it != last; ++it) {
-            snapshot.push_back(*it);
-        }
-        for (const auto& v : snapshot) {
-            push_back(v);
-        }
-    } else {
-        // Safe to iterate directly without snapshot
-        for (auto it = first; it != last; ++it) {
-            push_back(*it);
-        }
+    for (const auto& v : snapshot) {
+        push_back(v);
     }
 #else
     values.insert(values.end(), first, last);
