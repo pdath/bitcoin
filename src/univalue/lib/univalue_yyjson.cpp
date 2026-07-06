@@ -274,6 +274,9 @@ UniValue& UniValue::operator=(const UniValue& other) {
         
         // For primitives, copy val directly (it's already populated)
         if (other.typ != VARR && other.typ != VOBJ) {
+            // Clear container state (keys/values) when assigning a primitive
+            keys.clear();
+            values.clear();
             val = other.val;
             m_materialized = true;
         } else {

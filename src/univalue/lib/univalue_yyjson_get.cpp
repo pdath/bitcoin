@@ -3,6 +3,7 @@
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 
 #include <univalue.h>
+#include <univalue_common.h>
 #include <yyjson/yyjson.h>
 
 #include <map>
@@ -94,7 +95,7 @@ const std::string& UniValue::get_str() const {
  * @brief Get the floating-point value
  *
  * Triggers materialization if the value hasn't been materialized yet.
- * Parses the string representation using std::stod.
+ * Parses the string representation using ParseDouble for strict, locale-independent parsing.
  *
  * @return The double-precision floating-point value
  * @throws std::runtime_error if this is not a number or out of range
@@ -104,11 +105,11 @@ double UniValue::get_real() const {
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         const_cast<UniValue*>(this)->materialize();
     }
-    try {
-        return std::stod(val);
-    } catch (...) {
+    double result;
+    if (!ParseDouble(val, &result)) {
         throw std::runtime_error("JSON number out of range for double");
     }
+    return result;
 }
 
 /**
