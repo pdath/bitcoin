@@ -1,2 +1,0 @@
-/usr/bin/ar qc libcrc32c.a CMakeFiles/crc32c.dir/crc32c/src/crc32c.cc.o CMakeFiles/crc32c.dir/crc32c/src/crc32c_portable.cc.o CMakeFiles/crc32c.dir/crc32c/src/crc32c_arm64.cc.o
-/usr/bin/ranlib libcrc32c.a

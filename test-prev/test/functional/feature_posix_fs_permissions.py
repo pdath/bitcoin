@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/feature_posix_fs_permissions.py

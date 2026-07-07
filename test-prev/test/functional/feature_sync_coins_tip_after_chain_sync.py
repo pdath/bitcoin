@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/feature_sync_coins_tip_after_chain_sync.py

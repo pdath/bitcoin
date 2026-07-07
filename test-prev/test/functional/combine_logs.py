@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/combine_logs.py

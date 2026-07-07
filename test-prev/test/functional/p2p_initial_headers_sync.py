@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/p2p_initial_headers_sync.py

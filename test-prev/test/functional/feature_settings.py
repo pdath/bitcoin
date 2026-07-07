@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/feature_settings.py

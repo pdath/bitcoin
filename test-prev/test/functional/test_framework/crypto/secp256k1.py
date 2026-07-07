@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/test_framework/crypto/secp256k1.py

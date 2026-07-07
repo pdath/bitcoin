@@ -1,1 +1,0 @@
-/usr/bin/c++ -O2 -fstack-reuse=none -fstack-protector-all -fstack-clash-protection -Wl,-z,relro -Wl,-z,now -Wl,-z,separate-code -fPIE -pie CMakeFiles/object.dir/test/object.cpp.o -o object  libunivalue.a  

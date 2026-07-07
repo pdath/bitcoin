@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/mocks/multi_signers.py

@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/mining_coin_age_priority.py

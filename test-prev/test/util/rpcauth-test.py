@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/util/rpcauth-test.py

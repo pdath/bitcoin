@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/tool_utxo_to_sqlite.py

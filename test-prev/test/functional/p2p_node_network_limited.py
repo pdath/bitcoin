@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/p2p_node_network_limited.py

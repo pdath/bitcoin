@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/rpc_named_arguments.py

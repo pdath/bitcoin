@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/interface_http.py

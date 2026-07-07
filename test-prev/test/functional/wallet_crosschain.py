@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/wallet_crosschain.py

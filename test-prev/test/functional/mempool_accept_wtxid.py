@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/mempool_accept_wtxid.py

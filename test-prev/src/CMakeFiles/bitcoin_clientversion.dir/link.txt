@@ -1,2 +1,0 @@
-/usr/bin/ar qc ../lib/libbitcoin_clientversion.a CMakeFiles/bitcoin_clientversion.dir/clientversion.cpp.o
-/usr/bin/ranlib ../lib/libbitcoin_clientversion.a

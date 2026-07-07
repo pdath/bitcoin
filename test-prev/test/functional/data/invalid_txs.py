@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/data/invalid_txs.py

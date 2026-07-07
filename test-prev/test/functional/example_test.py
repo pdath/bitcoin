@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/example_test.py

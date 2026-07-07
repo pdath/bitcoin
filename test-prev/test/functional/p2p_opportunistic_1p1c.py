@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/p2p_opportunistic_1p1c.py

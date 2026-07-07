@@ -1,1 +1,0 @@
-/home/odroid/bitcoin/test/functional/rpc_invalid_address_message.py
