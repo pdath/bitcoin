@@ -1171,7 +1171,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
  *
  * @param obj The object to merge from (must be an object)
  */
-void UniValue::pushKVs(const UniValue& obj) {
+void UniValue::pushKVs(UniValue obj) {
     checkType(VOBJ);
     obj.checkType(VOBJ);
 
@@ -1180,13 +1180,8 @@ void UniValue::pushKVs(const UniValue& obj) {
         obj.materialize();
     }
 
-    // Always take a snapshot of the source object's keys/values to handle
-    // any self-aliasing or descendant aliasing cases safely.
-    // This ensures stable iteration even if pushKVEnd mutates values.
-    std::vector<std::string> source_keys = obj.keys;
-    std::vector<UniValue> source_values = obj.values;
-    for (size_t i = 0; i < source_keys.size(); ++i)
-        pushKVEnd(std::move(source_keys[i]), std::move(source_values[i]));
+    for (size_t i = 0; i < obj.keys.size(); ++i)
+        pushKVEnd(std::move(obj.keys[i]), std::move(obj.values[i]));
 }
 
 /**
