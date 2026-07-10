@@ -274,13 +274,24 @@ UniValue& UniValue::operator=(const UniValue& other) {
         std::vector<UniValue> other_values;
         bool other_has_yyjson = other.m_yyjson_doc && other.m_yyjson_node;
         bool other_materialized = other.m_materialized;
+        
+        // Snapshot yyjson state to use after clear() - retain strong reference to doc
+        std::shared_ptr<yyjson_mut_doc> other_doc;
+        yyjson_mut_val* other_node = nullptr;
+        if (other_has_yyjson) {
+            other_doc = other.m_yyjson_doc;  // Retain strong reference before clear()
+            other_node = other.m_yyjson_node;
+        }
 
         // For containers, snapshot the data we'll need after clear()
         // Note: Even if other has a yyjson tree, we may need keys/values if tree copy fails
         if (other_typ == VARR || other_typ == VOBJ) {
             if (other_has_yyjson) {
-                // We'll try yyjson tree copy path first
-                // If it fails, we'll materialize and use keys/values
+                // Snapshot keys/values in case tree copy fails and we need fallback
+                const_cast<UniValue&>(other).materialize();
+                other_keys = other.keys;
+                other_values = other.values;
+                other_materialized = true;
             } else if (other_materialized) {
                 // Already materialized without tree, snapshot keys/values
                 other_keys = other.keys;
@@ -305,17 +316,16 @@ UniValue& UniValue::operator=(const UniValue& other) {
         } else {
             // For containers: preserve yyjson tree if available to maintain performance
             if (other_has_yyjson) {
-                // Deep copy the yyjson tree
+                // Deep copy the yyjson tree using snapshotted node
                 m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
+                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), other_node);
                 if (!m_yyjson_node) {
-                    // Copy failed, fall back: must materialize other to get its data
+                    // Copy failed, fall back: use snapshotted keys/values
                     m_yyjson_doc.reset();
                     typ = other_typ;
-                    const_cast<UniValue&>(other).materialize();
-                    keys = other.keys;
-                    values = other.values;
-                    m_materialized = true;
+                    keys = std::move(other_keys);
+                    values = std::move(other_values);
+                    m_materialized = other_materialized;
                 } else {
                     typ = other_typ;
                     setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
@@ -657,19 +667,18 @@ void UniValue::checkType(const VType& expected) const {
  * For arrays: Builds the `values` vector from the yyjson array
  * For objects: Builds both `keys` and `values` vectors from the yyjson object
  *
- * Once materialized, subsequent accesses use the cached representation.
+ * Supports rematerialization when m_materialized is set to false (e.g., after
+ * push_back/pushKV add to the yyjson tree). Uses mutex for thread-safety.
  *
- * @note Thread-safe: Uses std::call_once to ensure each object is materialized
- * exactly once, even when accessed concurrently from multiple threads. This
- * preserves lazy evaluation while maintaining the const contract that
- * const UniValue& can be safely read from multiple threads.
+ * @note Thread-safe: Uses std::mutex to protect materialization and allow
+ * re-entry when the object transitions back to non-materialized state.
  */
 void UniValue::materialize() const {
-    std::call_once(m_materialize_flag, [this]() {
-        if (m_materialized) return;
-        if (!m_yyjson_doc || !m_yyjson_node) return;
+    std::lock_guard<std::mutex> lock(m_materialize_mutex);
+    if (m_materialized) return;
+    if (!m_yyjson_doc || !m_yyjson_node) return;
 
-        yyjson_type ytype = yyjson_mut_get_type(m_yyjson_node);
+    yyjson_type ytype = yyjson_mut_get_type(m_yyjson_node);
 
         switch (ytype) {
             case YYJSON_TYPE_NULL:
@@ -783,21 +792,19 @@ void UniValue::materialize() const {
         }
 
         m_materialized = true;
-    });
 }
 
 /**
  * @brief Centralized guard to materialize on-demand if needed
  *
- * Calls materialize() which uses std::call_once to ensure thread-safe materialization.
- * All reads of m_yyjson_doc, m_yyjson_node, and m_materialized occur under
- * the same std::call_once synchronization used by materialize().
+ * Calls materialize() which uses a mutex to ensure thread-safe materialization.
+ * Supports rematerialization when m_materialized changes state.
  *
  * This is safe because:
  * 1. We only populate the cache (val/keys/values) which is logically equivalent to the yyjson tree
  * 2. The cache members are mutable when WITH_YYJSON=ON, so this can be done in const context
  * 3. Materialization is idempotent - calling it multiple times has the same result
- * 4. All state checks are performed under std::call_once synchronization in materialize()
+ * 4. All state checks are performed under mutex synchronization in materialize()
  */
 void UniValue::materializeIfNeeded() const {
     materialize();

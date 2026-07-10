@@ -189,7 +189,7 @@ private:
     mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc; //!< Shared pointer to yyjson mutable document (primary storage)
     mutable yyjson_mut_val* m_yyjson_node{nullptr};    //!< Pointer to the root node in the yyjson tree
     mutable bool m_materialized{false};                //!< Whether lazy caches (val/keys/values) have been populated
-    mutable std::once_flag m_materialize_flag;        //!< Ensures thread-safe lazy materialization (executed once per object)
+    mutable std::mutex m_materialize_mutex;          //!< Protects materialization to allow re-entry when m_materialized changes
 
     void materialize() const;              // Populate lazy caches from yyjson
     void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
