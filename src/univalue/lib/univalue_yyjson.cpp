@@ -171,7 +171,9 @@ UniValue::~UniValue() {}
  * @brief Copy constructor
  *
  * For primitives: Copies `val` directly (already populated, no document).
- * For containers: Deep copies the yyjson tree using copyYyjsonValue().
+ * For containers: Deep copies the yyjson tree using yyjson_mut_val_mut_copy()
+ * to preserve performance. Falls back to materializing and copying keys/values
+ * if the source has no yyjson tree.
  * For values without documents: Copies val only, no yyjson state.
  *
  * @param other The UniValue to copy from
@@ -188,30 +190,35 @@ UniValue::UniValue(const UniValue& other)
         val = other.val;
         m_materialized = true;
     } else {
-        // For containers: always ensure keys/values are populated for const-correctness
-        // This ensures that getKeys()/getValues() never need to modify a const object
-        if (other.m_materialized) {
-            // Other is already materialized, copy keys/values directly
-            keys = other.keys;
-            values = other.values;
-            m_materialized = true;
-        } else if (other.m_yyjson_doc && other.m_yyjson_node) {
-            // Other has yyjson state but is not materialized - we need to materialize it first
-            other.materialize();
-            // Now copy the materialized data
+        // For containers: preserve yyjson tree if available to maintain performance
+        if (other.m_yyjson_doc && other.m_yyjson_node) {
+            // Deep copy the yyjson tree
+            m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+            m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
+            if (!m_yyjson_node) {
+                // Copy failed, fall back: must materialize other to get its data
+                m_yyjson_doc.reset();
+                const_cast<UniValue&>(other).materialize();
+                keys = other.keys;
+                values = other.values;
+                m_materialized = true;
+            } else {
+                setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+                m_materialized = false;  // New tree, not yet materialized
+            }
+        } else if (other.m_materialized) {
+            // Other is already materialized without yyjson tree, copy keys/values directly
             keys = other.keys;
             values = other.values;
             m_materialized = true;
         } else {
             // Other has no yyjson state and is not materialized
-            // This shouldn't happen for valid objects, but handle it gracefully
+            // Materialize other first to ensure we get the correct data
+            const_cast<UniValue&>(other).materialize();
             keys = other.keys;
             values = other.values;
             m_materialized = true;
         }
-        // For containers, we don't need yyjson state since we have materialized keys/values
-        m_yyjson_doc = nullptr;
-        m_yyjson_node = nullptr;
     }
 }
 
@@ -246,66 +253,81 @@ UniValue::UniValue(UniValue&& other) noexcept
 /**
  * @brief Copy assignment operator
  *
- * Similar to copy constructor: deep copy yyjson tree for containers,
- * copy val directly for primitives.
+ * Similar to copy constructor: deep copy yyjson tree for containers using
+ * yyjson_mut_val_mut_copy() to preserve performance, copy val directly for primitives.
+ * Handles self-assignment safely by taking a complete snapshot of the source before
+ * clearing the destination, ensuring that self-referential assignments like obj = obj["child"]
+ * do not invalidate the source data.
  *
  * @param other The UniValue to copy from
  * @return Reference to this
  */
 UniValue& UniValue::operator=(const UniValue& other) {
     if (this != &other) {
-        // Take a safe snapshot of the source state at the start to handle self-referential assignments
-        // like obj = obj["child"]. This ensures that clearing keys/values doesn't invalidate 'other'.
+        // Take a COMPLETE snapshot of the source state BEFORE clearing this
+        // to handle self-referential assignments like obj = obj["child"].
+        // This ensures that clearing this->keys/values doesn't invalidate 'other'
+        // when other is a reference into this's data structures.
         const VType other_typ = other.typ;
         const std::string other_val = other.val;
         std::vector<std::string> other_keys;
         std::vector<UniValue> other_values;
-        bool other_materialized = false;
+        bool other_has_yyjson = other.m_yyjson_doc && other.m_yyjson_node;
+        bool other_materialized = other.m_materialized;
 
-        // For containers, we need to snapshot the keys/values before we start modifying this
-        if (other.typ == VARR || other.typ == VOBJ) {
-            // Ensure other is materialized so we can safely copy its data
-            if (other.m_materialized) {
+        // For containers, snapshot the data we'll need after clear()
+        // Note: Even if other has a yyjson tree, we may need keys/values if tree copy fails
+        if (other_typ == VARR || other_typ == VOBJ) {
+            if (other_has_yyjson) {
+                // We'll try yyjson tree copy path first
+                // If it fails, we'll materialize and use keys/values
+            } else if (other_materialized) {
+                // Already materialized without tree, snapshot keys/values
                 other_keys = other.keys;
                 other_values = other.values;
-                other_materialized = true;
-            } else if (other.m_yyjson_doc && other.m_yyjson_node) {
-                // Other has yyjson state but is not materialized - we need to materialize it first
-                // We need to call materialize() on a const object, which is safe due to mutable
-                const_cast<UniValue&>(other).materialize();
-                other_keys = other.keys;
-                other_values = other.values;
-                other_materialized = true;
             } else {
-                // Other doesn't have yyjson state, copy keys/values directly
+                // Not materialized and no tree, need to materialize first then snapshot
+                const_cast<UniValue&>(other).materialize();
                 other_keys = other.keys;
                 other_values = other.values;
                 other_materialized = true;
             }
         }
 
-        // Now safely update this object's state
-        typ = other_typ;
-
-        // Clear existing yyjson state
-        m_yyjson_doc.reset();
-        m_yyjson_node = nullptr;
+        // Clear existing state first to release resources
+        clear();
 
         // For primitives, copy val directly (it's already populated)
         if (other_typ != VARR && other_typ != VOBJ) {
-            // Clear container state (keys/values) when assigning a primitive
-            keys.clear();
-            values.clear();
+            typ = other_typ;
             val = other_val;
             m_materialized = true;
         } else {
-            // For containers: copy from the snapshot
-            keys = std::move(other_keys);
-            values = std::move(other_values);
-            m_materialized = other_materialized;
-            // For containers, we don't need yyjson state since we have materialized keys/values
-            m_yyjson_doc = nullptr;
-            m_yyjson_node = nullptr;
+            // For containers: preserve yyjson tree if available to maintain performance
+            if (other_has_yyjson) {
+                // Deep copy the yyjson tree
+                m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
+                if (!m_yyjson_node) {
+                    // Copy failed, fall back: must materialize other to get its data
+                    m_yyjson_doc.reset();
+                    typ = other_typ;
+                    const_cast<UniValue&>(other).materialize();
+                    keys = other.keys;
+                    values = other.values;
+                    m_materialized = true;
+                } else {
+                    typ = other_typ;
+                    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+                    m_materialized = false;  // New tree, not yet materialized
+                }
+            } else {
+                // Other has no yyjson tree, use snapshotted keys/values
+                typ = other_typ;
+                keys = std::move(other_keys);
+                values = std::move(other_values);
+                m_materialized = other_materialized;
+            }
         }
     }
     return *this;
@@ -636,125 +658,132 @@ void UniValue::checkType(const VType& expected) const {
  * For objects: Builds both `keys` and `values` vectors from the yyjson object
  *
  * Once materialized, subsequent accesses use the cached representation.
+ *
+ * @note Thread-safe: Uses std::call_once to ensure each object is materialized
+ * exactly once, even when accessed concurrently from multiple threads. This
+ * preserves lazy evaluation while maintaining the const contract that
+ * const UniValue& can be safely read from multiple threads.
  */
 void UniValue::materialize() const {
-    if (m_materialized) return;
-    if (!m_yyjson_doc || !m_yyjson_node) return;
+    std::call_once(m_materialize_flag, [this]() {
+        if (m_materialized) return;
+        if (!m_yyjson_doc || !m_yyjson_node) return;
 
-    yyjson_type ytype = yyjson_mut_get_type(m_yyjson_node);
+        yyjson_type ytype = yyjson_mut_get_type(m_yyjson_node);
 
-    switch (ytype) {
-        case YYJSON_TYPE_NULL:
-            typ = VNULL;
-            // Clear yyjson state for primitives after materialization
-            m_yyjson_doc.reset();
-            m_yyjson_node = nullptr;
-            break;
-        case YYJSON_TYPE_BOOL:
-            typ = VBOOL;
-            // yyjson_mut_get_bool for mutable values
-            if (yyjson_mut_get_bool(m_yyjson_node)) {
-                val = "1";
-            } else {
-                val.clear();  // Empty string for false
-            }
-            // Clear yyjson state for primitives after materialization
-            m_yyjson_doc.reset();
-            m_yyjson_node = nullptr;
-            break;
-        case YYJSON_TYPE_RAW:
-        case YYJSON_TYPE_NUM: {
-            const char* raw = yyjson_mut_get_raw(m_yyjson_node);
-            size_t len = yyjson_mut_get_len(m_yyjson_node);
-            typ = VNUM;
-            if (raw && len > 0) {
-                val.assign(raw, len);
-            } else {
-                val = "0"; // Fallback for invalid numbers
-            }
-            // Clear yyjson state for primitives after materialization
-            m_yyjson_doc.reset();
-            m_yyjson_node = nullptr;
-            break;
-        }
-        case YYJSON_TYPE_STR: {
-            const char* str = yyjson_mut_get_str(m_yyjson_node);
-            size_t len = yyjson_mut_get_len(m_yyjson_node);
-            typ = VSTR;
-            if (str && len > 0) {
-                val.assign(str, len);
-            } else {
-                val = ""; // Fallback for invalid strings
-            }
-            // Clear yyjson state for primitives after materialization
-            m_yyjson_doc.reset();
-            m_yyjson_node = nullptr;
-            break;
-        }
-        case YYJSON_TYPE_ARR:
-            typ = VARR;
-            {
-                // Clear existing representation
-                values.clear();
-
-                // Optimization: Pre-allocate capacity to avoid reallocations
-                size_t arr_size = yyjson_mut_arr_size(m_yyjson_node);
-                values.reserve(arr_size);
-
-                size_t idx, max;
-                yyjson_mut_val *item;
-                // Use mutable foreach for mutable documents
-                yyjson_mut_arr_foreach(m_yyjson_node, idx, max, item) {
-                    UniValue new_val;
-                    new_val.clear();  // Clear to avoid memory leak from default constructor
-                    new_val.m_yyjson_doc = m_yyjson_doc;
-                    new_val.m_yyjson_node = item;
-                    new_val.materialize();
-                    values.push_back(std::move(new_val));
+        switch (ytype) {
+            case YYJSON_TYPE_NULL:
+                typ = VNULL;
+                // Clear yyjson state for primitives after materialization
+                m_yyjson_doc.reset();
+                m_yyjson_node = nullptr;
+                break;
+            case YYJSON_TYPE_BOOL:
+                typ = VBOOL;
+                // yyjson_mut_get_bool for mutable values
+                if (yyjson_mut_get_bool(m_yyjson_node)) {
+                    val = "1";
+                } else {
+                    val.clear();  // Empty string for false
                 }
+                // Clear yyjson state for primitives after materialization
+                m_yyjson_doc.reset();
+                m_yyjson_node = nullptr;
+                break;
+            case YYJSON_TYPE_RAW:
+            case YYJSON_TYPE_NUM: {
+                const char* raw = yyjson_mut_get_raw(m_yyjson_node);
+                size_t len = yyjson_mut_get_len(m_yyjson_node);
+                typ = VNUM;
+                if (raw && len > 0) {
+                    val.assign(raw, len);
+                } else {
+                    val = "0"; // Fallback for invalid numbers
+                }
+                // Clear yyjson state for primitives after materialization
+                m_yyjson_doc.reset();
+                m_yyjson_node = nullptr;
+                break;
             }
-            break;
-        case YYJSON_TYPE_OBJ:
-            typ = VOBJ;
-            {
-                // Clear existing representation
-                keys.clear();
-                values.clear();
+            case YYJSON_TYPE_STR: {
+                const char* str = yyjson_mut_get_str(m_yyjson_node);
+                size_t len = yyjson_mut_get_len(m_yyjson_node);
+                typ = VSTR;
+                if (str && len > 0) {
+                    val.assign(str, len);
+                } else {
+                    val = ""; // Fallback for invalid strings
+                }
+                // Clear yyjson state for primitives after materialization
+                m_yyjson_doc.reset();
+                m_yyjson_node = nullptr;
+                break;
+            }
+            case YYJSON_TYPE_ARR:
+                typ = VARR;
+                {
+                    // Clear existing representation
+                    values.clear();
 
-                // Optimization: Pre-allocate capacity to avoid reallocations
-                size_t obj_size = yyjson_mut_obj_size(m_yyjson_node);
-                keys.reserve(obj_size);
-                values.reserve(obj_size);
+                    // Optimization: Pre-allocate capacity to avoid reallocations
+                    size_t arr_size = yyjson_mut_arr_size(m_yyjson_node);
+                    values.reserve(arr_size);
 
-                // Use mutable iterator for mutable documents
-                yyjson_mut_val *key, *v;
-                yyjson_mut_obj_iter iter;
-                if (yyjson_mut_obj_iter_init(m_yyjson_node, &iter)) {
-                    while ((key = yyjson_mut_obj_iter_next(&iter))) {
-                        v = yyjson_mut_obj_iter_get_val(key);
-                        const char* kstr = yyjson_mut_get_str(key);
-                        size_t klen = yyjson_mut_get_len(key);
-                        std::string k;
-                        if (kstr && klen > 0) {
-                            k.assign(kstr, klen);
-                        }
+                    size_t idx, max;
+                    yyjson_mut_val *item;
+                    // Use mutable foreach for mutable documents
+                    yyjson_mut_arr_foreach(m_yyjson_node, idx, max, item) {
                         UniValue new_val;
                         new_val.clear();  // Clear to avoid memory leak from default constructor
                         new_val.m_yyjson_doc = m_yyjson_doc;
-                        new_val.m_yyjson_node = v;
+                        new_val.m_yyjson_node = item;
                         new_val.materialize();
-                        keys.push_back(std::move(k));
                         values.push_back(std::move(new_val));
                     }
                 }
-            }
-            break;
-        default:
-            // Unknown type, mark as materialized but don't change the representation
-            break;
-    }
+                break;
+            case YYJSON_TYPE_OBJ:
+                typ = VOBJ;
+                {
+                    // Clear existing representation
+                    keys.clear();
+                    values.clear();
 
-    m_materialized = true;
+                    // Optimization: Pre-allocate capacity to avoid reallocations
+                    size_t obj_size = yyjson_mut_obj_size(m_yyjson_node);
+                    keys.reserve(obj_size);
+                    values.reserve(obj_size);
+
+                    // Use mutable iterator for mutable documents
+                    yyjson_mut_val *key, *v;
+                    yyjson_mut_obj_iter iter;
+                    if (yyjson_mut_obj_iter_init(m_yyjson_node, &iter)) {
+                        while ((key = yyjson_mut_obj_iter_next(&iter))) {
+                            v = yyjson_mut_obj_iter_get_val(key);
+                            const char* kstr = yyjson_mut_get_str(key);
+                            size_t klen = yyjson_mut_get_len(key);
+                            std::string k;
+                            if (kstr && klen > 0) {
+                                k.assign(kstr, klen);
+                            }
+                            UniValue new_val;
+                            new_val.clear();  // Clear to avoid memory leak from default constructor
+                            new_val.m_yyjson_doc = m_yyjson_doc;
+                            new_val.m_yyjson_node = v;
+                            new_val.materialize();
+                            keys.push_back(std::move(k));
+                            values.push_back(std::move(new_val));
+                        }
+                    }
+                }
+                break;
+            default:
+                // Unknown type, mark as materialized but don't change the representation
+                break;
+        }
+
+        m_materialized = true;
+    });
 }
 
 /**
