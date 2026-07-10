@@ -111,15 +111,14 @@ void UniValue::push_back(UniValue val)
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
     checkType(VARR);
-    // Guard against self-append: if vec is our own values, take a snapshot before modifying
-    if (&vec == &values) {
-        // Self-append case: vec is our own values vector, must snapshot before modifying
-        std::vector<UniValue> snapshot = vec;
-        for (const auto& v : snapshot) {
-            push_back(v);
-        }
-    } else {
-        values.insert(values.end(), vec.begin(), vec.end());
+    // Always snapshot the input vector to avoid iterator invalidation.
+    // Previously only direct self-append (&vec == &values) was guarded, but this
+    // also handles nested aliases like arr.push_backV(arr[0].getValues()) where vec
+    // references a nested container's values. Reallocation during insert would
+    // invalidate such references, causing undefined behavior.
+    std::vector<UniValue> snapshot = vec;
+    for (const auto& v : snapshot) {
+        push_back(v);
     }
 }
 
