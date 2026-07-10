@@ -33,8 +33,8 @@
  *
  * @par Thread Safety (WITH_YYJSON)
  * When compiled with WITH_YYJSON=ON, UniValue uses yyjson as the primary storage backend.
- * - Reading from const UniValue& is thread-safe: lazy materialization uses std::call_once
- *   to ensure each object is materialized exactly once, even with concurrent access.
+ * - Reading from const UniValue& is thread-safe: lazy materialization uses std::mutex
+ *   to ensure thread-safe access and support rematerialization when state changes.
  * - Copying containers preserves the yyjson tree via yyjson_mut_val_mut_copy(), avoiding
  *   the performance regression that occurred when copies unconditionally discarded trees.
  * - Modifying non-const UniValue objects requires external synchronization.
