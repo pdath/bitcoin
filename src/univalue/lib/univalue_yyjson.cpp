@@ -789,18 +789,18 @@ void UniValue::materialize() const {
 /**
  * @brief Centralized guard to materialize on-demand if needed
  *
- * Checks if the object has yyjson state and is not yet materialized,
- * then calls materialize(). This centralizes the repeated guard pattern.
+ * Calls materialize() which uses std::call_once to ensure thread-safe materialization.
+ * All reads of m_yyjson_doc, m_yyjson_node, and m_materialized occur under
+ * the same std::call_once synchronization used by materialize().
  *
  * This is safe because:
  * 1. We only populate the cache (val/keys/values) which is logically equivalent to the yyjson tree
  * 2. The cache members are mutable when WITH_YYJSON=ON, so this can be done in const context
  * 3. Materialization is idempotent - calling it multiple times has the same result
+ * 4. All state checks are performed under std::call_once synchronization in materialize()
  */
 void UniValue::materializeIfNeeded() const {
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
-    }
+    materialize();
 }
 
 
