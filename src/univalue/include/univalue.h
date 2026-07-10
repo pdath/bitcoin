@@ -6,6 +6,7 @@
 #ifndef BITCOIN_UNIVALUE_INCLUDE_UNIVALUE_H
 #define BITCOIN_UNIVALUE_INCLUDE_UNIVALUE_H
 
+#include <atomic>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -188,11 +189,12 @@ private:
     // yyjson primary storage
     mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc; //!< Shared pointer to yyjson mutable document (primary storage)
     mutable yyjson_mut_val* m_yyjson_node{nullptr};    //!< Pointer to the root node in the yyjson tree
-    mutable bool m_materialized{false};                //!< Whether lazy caches (val/keys/values) have been populated
+    mutable std::atomic<bool> m_materialized{false};  //!< Whether lazy caches (val/keys/values) have been populated
     mutable std::mutex m_materialize_mutex;          //!< Protects materialization to allow re-entry when m_materialized changes
 
     void materialize() const;              // Populate lazy caches from yyjson
     void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
+    void materialize_unsafe() const;      // Populate lazy caches without locking (caller must hold m_materialize_mutex)
     static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr
 #endif
 
