@@ -909,7 +909,7 @@ void UniValue::push_back(UniValue val) {
                 new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add to array
-                    return;
+                    throw std::bad_alloc();
                 }
             } else {
                 // Optimization: val is a primitive without its own document
@@ -929,14 +929,16 @@ void UniValue::push_back(UniValue val) {
                         break;
                     default:
                         // Shouldn't happen for non-container types
-                        return;
+                        throw std::runtime_error("Unexpected type in push_back");
                 }
             }
             if (!new_val) {
                 // Node creation failed, cannot add to array
-                return;
+                throw std::bad_alloc();
             }
-            yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val);
+            if (!yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val)) {
+                throw std::runtime_error("yyjson_mut_arr_append failed");
+            }
             // Successfully added to yyjson tree, set m_materialized to false and return
             m_materialized = false;
             return;
@@ -979,11 +981,11 @@ void UniValue::pushKV(std::string key, UniValue val) {
 
     if (m_yyjson_doc && m_yyjson_node) {
         // Always update the yyjson tree (primary storage)
-        // Create key first, then value - if either fails, we return without adding
+        // Create key first, then value - if either fails, we throw
         yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
         if (!new_key) {
             // Key allocation failed, cannot add the pair
-            return;
+            throw std::bad_alloc();
         }
 
         // Check if we need to use legacy path (val is a container without yyjson tree)
@@ -1010,7 +1012,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add the pair
-                    return;
+                    throw std::bad_alloc();
                 }
             } else {
                 // val is a primitive without its own document
@@ -1030,14 +1032,18 @@ void UniValue::pushKV(std::string key, UniValue val) {
                         break;
                     default:
                         // Shouldn't happen for non-container types
-                        return;
+                        throw std::runtime_error("Unexpected type in pushKV");
                 }
+            }
+            if (!new_val) {
+                // Node creation failed, cannot add to object
+                throw std::bad_alloc();
             }
 
             // Optimization: Use yyjson_mut_obj_put which handles both new and existing keys
             // in a single operation, avoiding the separate check+remove+add pattern
-            if (new_val) {
-                yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
+            if (!yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val)) {
+                throw std::runtime_error("yyjson_mut_obj_put failed");
             }
             // Successfully added to yyjson tree, set m_materialized to false
             // and return (no need for legacy fallback)
@@ -1085,11 +1091,11 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
 
         if (!use_legacy_path) {
             // Optimized path: assume keys are unique, skip duplicate checking
-            // Create key first, then value - if either fails, we return without adding
+            // Create key first, then value - if either fails, we throw
             yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
             if (!new_key) {
                 // Key allocation failed, cannot add the pair
-                return;
+                throw std::bad_alloc();
             }
 
             // Handle values with yyjson tree (both materialized and non-materialized containers)
@@ -1101,7 +1107,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
                 new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add the pair
-                    return;
+                    throw std::bad_alloc();
                 }
             } else {
                 // val is a primitive without its own document
@@ -1121,13 +1127,17 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
                         break;
                     default:
                         // Shouldn't happen for non-container types
-                        return;
+                        throw std::runtime_error("Unexpected type in pushKVEnd");
                 }
+            }
+            if (!new_val) {
+                // Node creation failed, cannot add to object
+                throw std::bad_alloc();
             }
 
             // Add to object - no duplicate key checking for better performance
-            if (new_val) {
-                yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val);
+            if (!yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val)) {
+                throw std::runtime_error("yyjson_mut_obj_add failed");
             }
             // Successfully added to yyjson tree, set m_materialized to false and return
             m_materialized = false;
