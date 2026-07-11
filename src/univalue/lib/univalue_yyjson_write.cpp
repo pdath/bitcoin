@@ -308,7 +308,8 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
     }
 
     // If we have a yyjson node but it's not the root, serialize just that node
-    if (m_yyjson_node && !use_fast_path) {
+    // Only use yyjson's write for indentation levels it supports (0 or 2 spaces)
+    if (m_yyjson_node && !use_fast_path && (prettyIndent == 0 || prettyIndent == 2)) {
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
         size_t len = 0;
         char* output = yyjson_mut_val_write_opts(m_yyjson_node, flags, nullptr, &len, nullptr);
