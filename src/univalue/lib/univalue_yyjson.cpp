@@ -195,42 +195,60 @@ UniValue::~UniValue() {}
  * @param other The UniValue to copy from
  */
 UniValue::UniValue(const UniValue& other)
-    : typ(other.typ)
 {
     // Initialize yyjson state to null (will be set below if needed)
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
 
-    // For primitives, copy val directly (it's already populated)
-    if (other.typ != VARR && other.typ != VOBJ) {
-        val = other.val;
-        m_materialized = true;
-    } else {
-        // For containers: preserve yyjson tree if available to maintain performance
-        if (other.m_yyjson_doc && other.m_yyjson_node) {
-            // Deep copy the yyjson tree
-            m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
-            m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other.m_yyjson_node);
-            if (!m_yyjson_node) {
-                // Copy failed, fall back: must materialize other to get its data
-                m_yyjson_doc.reset();
-                const_cast<UniValue&>(other).materialize();
+    // Acquire other's document mutex to safely read its state
+    auto other_doc_holder = other.m_yyjson_doc;
+    if (other_doc_holder) {
+        std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
+        typ = other.typ;
+        // For primitives, copy val directly (it's already populated)
+        if (other.typ != VARR && other.typ != VOBJ) {
+            val = other.val;
+            m_materialized = true;
+        } else {
+            // For containers: preserve yyjson tree if available to maintain performance
+            if (other.m_yyjson_doc && other.m_yyjson_node) {
+                // Deep copy the yyjson tree
+                m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other.m_yyjson_node);
+                if (!m_yyjson_node) {
+                    // Copy failed, fall back: must materialize other to get its data
+                    m_yyjson_doc.reset();
+                    const_cast<UniValue&>(other).materialize_unsafe();
+                    keys = other.keys;
+                    values = other.values;
+                    m_materialized = true;
+                } else {
+                    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
+                    m_materialized = false;  // New tree, not yet materialized
+                }
+            } else if (other.m_materialized) {
+                // Other is already materialized without yyjson tree, copy keys/values directly
                 keys = other.keys;
                 values = other.values;
                 m_materialized = true;
             } else {
-                setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
-                m_materialized = false;  // New tree, not yet materialized
+                // Other has no yyjson state and is not materialized
+                // Materialize other first to ensure we get the correct data
+                const_cast<UniValue&>(other).materialize_unsafe();
+                keys = other.keys;
+                values = other.values;
+                m_materialized = true;
             }
-        } else if (other.m_materialized) {
-            // Other is already materialized without yyjson tree, copy keys/values directly
-            keys = other.keys;
-            values = other.values;
+        }
+    } else {
+        // Other has no document, no locking needed
+        typ = other.typ;
+        // For primitives, copy val directly (it's already populated)
+        if (other.typ != VARR && other.typ != VOBJ) {
+            val = other.val;
             m_materialized = true;
         } else {
-            // Other has no yyjson state and is not materialized
-            // Materialize other first to ensure we get the correct data
-            const_cast<UniValue&>(other).materialize();
+            // Other has no yyjson state, copy keys/values directly
             keys = other.keys;
             values = other.values;
             m_materialized = true;
