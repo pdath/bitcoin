@@ -114,6 +114,10 @@ std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent,
         ::indentStr(prettyIndent, indentLevel, indentStr);
     }
 
+    if (!m_materialized && (typ == VARR || typ == VOBJ)) {
+        materialize_unsafe();
+    }
+
     // Access members directly to avoid deadlock (we already hold the document mutex)
     switch (typ) {
         case VNULL:

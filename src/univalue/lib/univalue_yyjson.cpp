@@ -218,63 +218,15 @@ UniValue::~UniValue() {}
  */
 UniValue::UniValue(const UniValue& other)
 {
-    // Initialize yyjson state to null (will be set below if needed)
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
 
-    // Acquire other's document mutex to safely read its state
     auto other_doc_holder = other.m_yyjson_doc;
     if (other_doc_holder) {
         std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
-        typ = other.typ;
-        // For primitives, copy val directly (it's already populated)
-        if (other.typ != VARR && other.typ != VOBJ) {
-            val = other.val;
-            m_materialized = true;
-        } else {
-            // For containers: preserve yyjson tree if available to maintain performance
-            if (other.m_yyjson_doc && other.m_yyjson_node) {
-                // Deep copy the yyjson tree
-                m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
-                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other.m_yyjson_node);
-                if (!m_yyjson_node) {
-                    // Copy failed, fall back: must materialize other to get its data
-                    m_yyjson_doc.reset();
-                    const_cast<UniValue&>(other).materialize_unsafe();
-                    keys = other.keys;
-                    values = other.values;
-                    m_materialized = true;
-                } else {
-                    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
-                    m_materialized = false;  // New tree, not yet materialized
-                }
-            } else if (other.m_materialized) {
-                // Other is already materialized without yyjson tree, copy keys/values directly
-                keys = other.keys;
-                values = other.values;
-                m_materialized = true;
-            } else {
-                // Other has no yyjson state and is not materialized
-                // Materialize other first to ensure we get the correct data
-                const_cast<UniValue&>(other).materialize_unsafe();
-                keys = other.keys;
-                values = other.values;
-                m_materialized = true;
-            }
-        }
+        copyFrom_unsafe(other);
     } else {
-        // Other has no document, no locking needed
-        typ = other.typ;
-        // For primitives, copy val directly (it's already populated)
-        if (other.typ != VARR && other.typ != VOBJ) {
-            val = other.val;
-            m_materialized = true;
-        } else {
-            // Other has no yyjson state, copy keys/values directly
-            keys = other.keys;
-            values = other.values;
-            m_materialized = true;
-        }
+        copyFrom_unsafe(other);
     }
 }
 
@@ -297,28 +249,11 @@ UniValue::UniValue(UniValue&& other) noexcept
     auto other_doc_holder = other.m_yyjson_doc;
     if (other_doc_holder) {
         std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
-        typ = other.typ;
-        val = std::move(other.val);
-        keys = std::move(other.keys);
-        values = std::move(other.values);
-        m_yyjson_doc = std::move(other.m_yyjson_doc);
-        m_yyjson_node = other.m_yyjson_node;
-        m_materialized = other.m_materialized;
+        transferFrom_unsafe(std::move(other));
     } else {
         // Other has no document, no locking needed
-        typ = other.typ;
-        val = std::move(other.val);
-        keys = std::move(other.keys);
-        values = std::move(other.values);
-        m_yyjson_doc = std::move(other.m_yyjson_doc);
-        m_yyjson_node = other.m_yyjson_node;
-        m_materialized = other.m_materialized;
+        transferFrom_unsafe(std::move(other));
     }
-
-    // Reset other to safe state
-    other.typ = VNULL;
-    other.m_yyjson_node = nullptr;
-    other.m_materialized = false;
 }
 
 /**
@@ -335,106 +270,17 @@ UniValue::UniValue(UniValue&& other) noexcept
  */
 UniValue& UniValue::operator=(const UniValue& other) {
     if (this != &other) {
-        // Take a COMPLETE snapshot of the source state BEFORE clearing this
-        // to handle self-referential assignments like obj = obj["child"].
-        // This ensures that clearing this->keys/values doesn't invalidate 'other'
-        // when other is a reference into this's data structures.
-        VType other_typ;
-        std::string other_val;
-        std::vector<std::string> other_keys;
-        std::vector<UniValue> other_values;
-        bool other_has_yyjson = false;
-        bool other_materialized = false;
-        std::shared_ptr<YyjsonDocWithMutex> other_doc;
-        yyjson_mut_val* other_node = nullptr;
-        
-        // Snapshot other's state under its document mutex
+        UniValue temp;
         auto other_doc_holder = other.m_yyjson_doc;
         if (other_doc_holder) {
             std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
-            other_typ = other.typ;
-            other_val = other.val;
-            other_has_yyjson = other.m_yyjson_doc && other.m_yyjson_node;
-            other_materialized = other.m_materialized;
-            
-            if (other_has_yyjson) {
-                other_doc = other.m_yyjson_doc;
-                other_node = other.m_yyjson_node;
-            }
-
-            // For containers, snapshot the data we'll need after clear()
-            if (other_typ == VARR || other_typ == VOBJ) {
-                if (other_has_yyjson) {
-                    // Materialize under existing lock
-                    const_cast<UniValue&>(other).materialize_unsafe();
-                    other_keys = other.keys;
-                    other_values = other.values;
-                    other_materialized = true;
-                } else if (other_materialized) {
-                    other_keys = other.keys;
-                    other_values = other.values;
-                } else {
-                    const_cast<UniValue&>(other).materialize_unsafe();
-                    other_keys = other.keys;
-                    other_values = other.values;
-                    other_materialized = true;
-                }
-            }
+            temp.copyFrom_unsafe(other);
         } else {
-            // Other has no document, no locking needed
-            other_typ = other.typ;
-            other_val = other.val;
-            other_has_yyjson = false;
-            other_materialized = other.m_materialized;
-            
-            // For containers without documents, snapshot keys/values
-            if (other_typ == VARR || other_typ == VOBJ) {
-                if (other_materialized) {
-                    other_keys = other.keys;
-                    other_values = other.values;
-                } else {
-                    const_cast<UniValue&>(other).materialize();
-                    other_keys = other.keys;
-                    other_values = other.values;
-                    other_materialized = true;
-                }
-            }
+            temp.copyFrom_unsafe(other);
         }
-
-        // Clear existing state first to release resources
+        
         clear();
-
-        // For primitives, copy val directly (it's already populated)
-        if (other_typ != VARR && other_typ != VOBJ) {
-            typ = other_typ;
-            val = other_val;
-            m_materialized = true;
-        } else {
-            // For containers: preserve yyjson tree if available to maintain performance
-            if (other_has_yyjson) {
-                // Deep copy the yyjson tree using snapshotted node
-                m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
-                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other_node);
-                if (!m_yyjson_node) {
-                    // Copy failed, fall back: use snapshotted keys/values
-                    m_yyjson_doc.reset();
-                    typ = other_typ;
-                    keys = std::move(other_keys);
-                    values = std::move(other_values);
-                    m_materialized = other_materialized;
-                } else {
-                    typ = other_typ;
-                    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
-                    m_materialized = false;  // New tree, not yet materialized
-                }
-            } else {
-                // Other has no yyjson tree, use snapshotted keys/values
-                typ = other_typ;
-                keys = std::move(other_keys);
-                values = std::move(other_values);
-                m_materialized = other_materialized;
-            }
-        }
+        transferFrom_unsafe(std::move(temp));
     }
     return *this;
 }
@@ -454,18 +300,13 @@ UniValue& UniValue::operator=(UniValue&& other) noexcept {
         clear();
 
         // Move all state from other
-        typ = other.typ;
-        val = std::move(other.val);
-        keys = std::move(other.keys);
-        values = std::move(other.values);
-        m_yyjson_doc = std::move(other.m_yyjson_doc);
-        m_yyjson_node = other.m_yyjson_node;  // Move node pointer (other's doc is now null after move)
-        m_materialized = other.m_materialized;
-
-        // Reset other to safe state
-        other.typ = VNULL;
-        other.m_yyjson_node = nullptr;
-        other.m_materialized = false;
+        auto other_doc_holder = other.m_yyjson_doc;
+        if (other_doc_holder) {
+            std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
+            transferFrom_unsafe(std::move(other));
+        } else {
+            transferFrom_unsafe(std::move(other));
+        }
     }
     return *this;
 }
@@ -484,6 +325,51 @@ void UniValue::clear() {
     m_yyjson_doc.reset();
     m_yyjson_node = nullptr;
     m_materialized = false;
+}
+
+void UniValue::transferFrom_unsafe(UniValue&& other) noexcept {
+    typ = other.typ;
+    val = std::move(other.val);
+    keys = std::move(other.keys);
+    values = std::move(other.values);
+    m_yyjson_doc = std::move(other.m_yyjson_doc);
+    m_yyjson_node = other.m_yyjson_node;
+    m_materialized = other.m_materialized;
+
+    other.typ = VNULL;
+    other.m_yyjson_node = nullptr;
+    other.m_materialized = false;
+}
+
+void UniValue::copyFrom_unsafe(const UniValue& other) {
+    typ = other.typ;
+    val = other.val;
+    
+    if (typ != VARR && typ != VOBJ) {
+        m_materialized = true;
+        return;
+    }
+    
+    if (other.m_yyjson_doc && other.m_yyjson_node) {
+        m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+        m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other.m_yyjson_node);
+        if (m_yyjson_node) {
+            setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
+            m_materialized = false;
+            return;
+        }
+        m_yyjson_doc.reset();
+    }
+    
+    const_cast<UniValue&>(other).materialize_unsafe();
+    keys = other.keys;
+    values.clear();
+    values.reserve(other.values.size());
+    for (const auto& child : other.values) {
+        values.emplace_back();
+        values.back().copyFrom_unsafe(child);
+    }
+    m_materialized = true;
 }
 
 /**
@@ -845,7 +731,8 @@ void UniValue::materialize_unsafe() const {
                     new_val.m_yyjson_doc = m_yyjson_doc;
                     new_val.m_yyjson_node = item;
                     new_val.materialize_unsafe();
-                    values.push_back(std::move(new_val));
+                    values.emplace_back();
+                    values.back().transferFrom_unsafe(std::move(new_val));
                 }
             }
             break;
@@ -875,7 +762,8 @@ void UniValue::materialize_unsafe() const {
                         new_val.m_yyjson_node = v;
                         new_val.materialize_unsafe();
                         keys.push_back(std::move(k));
-                        values.push_back(std::move(new_val));
+                        values.emplace_back();
+                        values.back().transferFrom_unsafe(std::move(new_val));
                     }
                 }
             }
@@ -1204,7 +1092,8 @@ void UniValue::push_back(UniValue val) {
         // Fallback to legacy representation under the document lock
         checkType_unsafe(VARR);
         materialize_unsafe();
-        values.push_back(std::move(val));
+        values.emplace_back();
+        values.back().transferFrom_unsafe(std::move(val));
         // Clear yyjson state to ensure writeYyjson() uses legacy representation
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
@@ -1214,7 +1103,8 @@ void UniValue::push_back(UniValue val) {
 
     // No document, use legacy path directly
     checkType_unsafe(VARR);
-    values.push_back(std::move(val));
+    values.emplace_back();
+    values.back().transferFrom_unsafe(std::move(val));
     m_materialized = true;
 }
 
@@ -1267,7 +1157,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 if (m_materialized) {
                     for (size_t i = 0; i < keys.size(); ++i) {
                         if (keys[i] == key) {
-                            values[i] = std::move(val);
+                            values[i].transferFrom_unsafe(std::move(val));
                             // Clear yyjson state to ensure writeYyjson() uses legacy representation
                             m_yyjson_doc.reset();
                             m_yyjson_node = nullptr;
@@ -1278,7 +1168,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 }
                 // Key not found, add new entry
                 keys.push_back(std::move(key));
-                values.push_back(std::move(val));
+                values.emplace_back();
+                values.back().transferFrom_unsafe(std::move(val));
                 // Clear yyjson state to ensure writeYyjson() uses legacy representation
                 m_yyjson_doc.reset();
                 m_yyjson_node = nullptr;
@@ -1341,7 +1232,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
         if (m_materialized) {
             for (size_t i = 0; i < keys.size(); ++i) {
                 if (keys[i] == key) {
-                    values[i] = std::move(val);
+                    values[i].transferFrom_unsafe(std::move(val));
                     // Clear yyjson state to ensure writeYyjson() uses legacy representation
                     m_yyjson_doc.reset();
                     m_yyjson_node = nullptr;
@@ -1352,7 +1243,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
         }
         // Key not found, add new entry
         keys.push_back(std::move(key));
-        values.push_back(std::move(val));
+        values.emplace_back();
+        values.back().transferFrom_unsafe(std::move(val));
         // Clear yyjson state to ensure writeYyjson() uses legacy representation
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
@@ -1367,14 +1259,15 @@ void UniValue::pushKV(std::string key, UniValue val) {
     if (typ == VOBJ) {
         for (size_t i = 0; i < keys.size(); ++i) {
             if (keys[i] == key) {
-                values[i] = std::move(val);
+                values[i].transferFrom_unsafe(std::move(val));
                 m_materialized = true;
                 return;
             }
         }
     }
     keys.push_back(std::move(key));
-    values.push_back(std::move(val));
+    values.emplace_back();
+    values.back().transferFrom_unsafe(std::move(val));
     m_materialized = true;
 }
 
@@ -1466,7 +1359,8 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             materialize_unsafe();
             // Add to legacy representation directly under the existing lock
             keys.push_back(std::move(key));
-            values.push_back(std::move(val));
+            values.emplace_back();
+            values.back().transferFrom_unsafe(std::move(val));
             // Clear yyjson state to ensure writeYyjson() uses legacy representation
             m_yyjson_doc.reset();
             m_yyjson_node = nullptr;
@@ -1479,7 +1373,8 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
         materialize_unsafe();
         // Add to legacy representation directly under the existing lock
         keys.push_back(std::move(key));
-        values.push_back(std::move(val));
+        values.emplace_back();
+        values.back().transferFrom_unsafe(std::move(val));
         // Clear yyjson state to ensure writeYyjson() uses legacy representation
         m_yyjson_doc.reset();
         m_yyjson_node = nullptr;
@@ -1490,7 +1385,8 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
     // No document, use legacy path directly
     checkType_unsafe(VOBJ);
     keys.push_back(std::move(key));
-    values.push_back(std::move(val));
+    values.emplace_back();
+    values.back().transferFrom_unsafe(std::move(val));
     m_materialized = true;
 }
 

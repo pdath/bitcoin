@@ -264,6 +264,8 @@ private:
     void materialize() const;              // Populate lazy caches from yyjson
     void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
     void materialize_unsafe() const;      // Populate lazy caches without locking (caller must hold doc->mutex)
+    void transferFrom_unsafe(UniValue&& other) noexcept; // Internal helper for move-like transfer under an existing lock
+    void copyFrom_unsafe(const UniValue& other); // Internal helper for copy under an existing lock
     friend std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent);
     const std::string& getValStr_unsafe() const { return val; } // Unsafe: caller must hold document mutex
     bool empty_unsafe() const; // Unsafe: caller must hold document mutex
