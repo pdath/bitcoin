@@ -392,10 +392,20 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
         if (m_yyjson_doc == doc_holder && m_yyjson_node) {
             return writeYyjson_unsafe(prettyIndent, indentLevel);
         }
+        // Document changed or no node - re-acquire the CURRENT document's lock
+        // First, we need to release the old lock (done when lock_guard goes out of scope)
+        // Then acquire the new lock
     }
     
     // No document or document changed, use fallback path
-    // This will use the materialized representation via writeYyjsonValueInternal
+    // Need to acquire the current document's lock (if it exists) before calling unsafe function
+    doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
+    }
+    
+    // No document at all, safe to call unsafe function without lock
     return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
 }
 
