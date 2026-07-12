@@ -30,13 +30,24 @@ bool UniValue::isTrue() const {
     auto doc_holder = m_yyjson_doc;
     if (doc_holder) {
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (typ != VBOOL) return false;
-        materialize_unsafe();
-        return val == "1";
+        return isTrue_unsafe();
     }
     // No document, direct access is safe
+    return isTrue_unsafe();
+}
+
+/**
+ * @brief Check if this UniValue represents true ("1") (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Triggers lazy materialization if the value hasn't been materialized yet.
+ *
+ * @return true if this is a boolean value equal to "1", false otherwise
+ * @note In UniValue's encoding: "1" = true
+ */
+bool UniValue::isTrue_unsafe() const {
     if (typ != VBOOL) return false;
-    materializeIfNeeded();
+    materialize_unsafe();
     return val == "1";
 }
 
@@ -52,13 +63,24 @@ bool UniValue::isFalse() const {
     auto doc_holder = m_yyjson_doc;
     if (doc_holder) {
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (typ != VBOOL) return false;
-        materialize_unsafe();
-        return val != "1";
+        return isFalse_unsafe();
     }
     // No document, direct access is safe
+    return isFalse_unsafe();
+}
+
+/**
+ * @brief Check if this UniValue represents false ("") (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Triggers lazy materialization if the value hasn't been materialized yet.
+ *
+ * @return true if this is a boolean value not equal to "1", false otherwise
+ * @note In UniValue's encoding: "1" = true, "" (empty) = false
+ */
+bool UniValue::isFalse_unsafe() const {
     if (typ != VBOOL) return false;
-    materializeIfNeeded();
+    materialize_unsafe();
     return val != "1";
 }
 
@@ -1014,9 +1036,22 @@ bool UniValue::empty() const {
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (!m_materialized) {
-            materialize_unsafe();
-        }
+        return empty_unsafe();
+    }
+    return empty_unsafe();
+}
+
+/**
+ * @brief Check if this container is empty (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Triggers materialization if the container hasn't been materialized yet.
+ *
+ * @return true if empty, false otherwise
+ */
+bool UniValue::empty_unsafe() const {
+    if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        materialize_unsafe();
     }
     return values.empty();
 }
@@ -1038,11 +1073,24 @@ size_t UniValue::size() const {
         auto doc_holder = m_yyjson_doc;
         
         // Synchronize materialization check and cache access to prevent data races
-        // Use document-level mutex for all UniValues sharing the same document
+        // Use document-level mutex for all UniValue sharing the same document
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (!m_materialized) {
-            materialize_unsafe();
-        }
+        return size_unsafe();
+    }
+    return size_unsafe();
+}
+
+/**
+ * @brief Get the size of this container (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Triggers materialization if the container hasn't been materialized yet.
+ *
+ * @return Number of elements in the container
+ */
+size_t UniValue::size_unsafe() const {
+    if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node && !m_materialized) {
+        materialize_unsafe();
     }
     // For containers, return the materialized size
     // Note: After materialization, values.size() should match the yyjson container size

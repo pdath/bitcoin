@@ -110,7 +110,9 @@ public:
     const std::string& getValStr() const;
     const std::string& getValStr_unsafe() const { return val; } // Unsafe: caller must hold document mutex
     bool empty() const;
+    bool empty_unsafe() const; // Unsafe: caller must hold document mutex
     size_t size() const;
+    size_t size_unsafe() const; // Unsafe: caller must hold document mutex
 #endif
 
     void reserve(size_t new_cap);
@@ -133,7 +135,9 @@ public:
 #else
     bool isNull() const { return (typ == VNULL); }
     bool isTrue() const;
+    bool isTrue_unsafe() const; // Unsafe: caller must hold document mutex
     bool isFalse() const;
+    bool isFalse_unsafe() const; // Unsafe: caller must hold document mutex
     bool isBool() const { return (typ == VBOOL); }
     bool isStr() const { return (typ == VSTR); }
     bool isNum() const { return (typ == VNUM); }
