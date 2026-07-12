@@ -243,7 +243,7 @@ bool UniValue::read(std::string_view str_in) {
     yyjson_mut_doc_set_root(mut_doc, mut_root);
 
     // Store document with automatic cleanup using shared_ptr
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(mut_doc, yyjson_doc_deleter);
+    m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(mut_doc);
     m_yyjson_node = mut_root;
 
     // Free the immutable document from yyjson_read

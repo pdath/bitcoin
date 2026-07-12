@@ -121,21 +121,21 @@ UniValue::UniValue() : typ(VNULL) {
 UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
     // Containers need yyjson documents for tree building
     if (type == VOBJ || type == VARR) {
-        m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+        m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
 
         switch (type) {
             case VOBJ:
-                m_yyjson_node = yyjson_mut_obj(m_yyjson_doc.get());
+                m_yyjson_node = yyjson_mut_obj(m_yyjson_doc->m_doc);
                 break;
             case VARR:
-                m_yyjson_node = yyjson_mut_arr(m_yyjson_doc.get());
+                m_yyjson_node = yyjson_mut_arr(m_yyjson_doc->m_doc);
                 break;
             default:
                 // Should not happen
                 m_yyjson_node = nullptr;
                 break;
         }
-        setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+        setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
         m_materialized.store(false);  // Containers are lazily materialized
     } else {
         // Primitive types: store in val only, no document needed
@@ -193,8 +193,8 @@ UniValue::UniValue(const UniValue& other)
         // For containers: preserve yyjson tree if available to maintain performance
         if (other.m_yyjson_doc && other.m_yyjson_node) {
             // Deep copy the yyjson tree
-            m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-            m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), other.m_yyjson_node);
+            m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+            m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other.m_yyjson_node);
             if (!m_yyjson_node) {
                 // Copy failed, fall back: must materialize other to get its data
                 m_yyjson_doc.reset();
@@ -203,7 +203,7 @@ UniValue::UniValue(const UniValue& other)
                 values = other.values;
                 m_materialized.store(true);
             } else {
-                setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+                setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
                 m_materialized.store(false);  // New tree, not yet materialized
             }
         } else if (other.m_materialized.load()) {
@@ -276,7 +276,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
         bool other_materialized = other.m_materialized.load();
         
         // Snapshot yyjson state to use after clear() - retain strong reference to doc
-        std::shared_ptr<yyjson_mut_doc> other_doc;
+        std::shared_ptr<YyjsonDocWithMutex> other_doc;
         yyjson_mut_val* other_node = nullptr;
         if (other_has_yyjson) {
             other_doc = other.m_yyjson_doc;  // Retain strong reference before clear()
@@ -317,8 +317,8 @@ UniValue& UniValue::operator=(const UniValue& other) {
             // For containers: preserve yyjson tree if available to maintain performance
             if (other_has_yyjson) {
                 // Deep copy the yyjson tree using snapshotted node
-                m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), other_node);
+                m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+                m_yyjson_node = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, other_node);
                 if (!m_yyjson_node) {
                     // Copy failed, fall back: use snapshotted keys/values
                     m_yyjson_doc.reset();
@@ -328,7 +328,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
                     m_materialized.store(other_materialized);
                 } else {
                     typ = other_typ;
-                    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+                    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
                     m_materialized.store(false);  // New tree, not yet materialized
                 }
             } else {
@@ -531,9 +531,9 @@ void UniValue::setNumStr(std::string str) {
     }
 
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+    m_yyjson_node = yyjson_mut_rawncpy(m_yyjson_doc->m_doc, str.data(), str.size());
+    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
     typ = VNUM;
     val = str;  // Store number string for fast access
     m_materialized.store(true);  // Primitives are always materialized
@@ -623,9 +623,9 @@ void UniValue::setStr(std::string str) {
  */
 void UniValue::setArray() {
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = yyjson_mut_arr(m_yyjson_doc.get());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+    m_yyjson_node = yyjson_mut_arr(m_yyjson_doc->m_doc);
+    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
     typ = VARR;
     // Don't populate val/keys/values for containers - use lazy materialization
     m_materialized.store(false);
@@ -638,9 +638,9 @@ void UniValue::setArray() {
  */
 void UniValue::setObject() {
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = yyjson_mut_obj(m_yyjson_doc.get());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
+    m_yyjson_node = yyjson_mut_obj(m_yyjson_doc->m_doc);
+    setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
     typ = VOBJ;
     // Don't populate val/keys/values for containers - use lazy materialization
     m_materialized.store(false);
@@ -661,7 +661,7 @@ void UniValue::checkType(const VType& expected) const {
  * @brief Materialize the yyjson tree into the legacy UniValue representation (internal, unlocked)
  *
  * Populates the `val`, `keys`, and `values` members from the yyjson tree.
- * This version does NOT lock the mutex - callers must hold m_materialize_mutex.
+ * This version does NOT lock the mutex - callers must hold the document-level mutex.
  *
  * For primitives: Extracts the value from the yyjson node into `val`
  * For arrays: Builds the `values` vector from the yyjson array
@@ -728,7 +728,7 @@ void UniValue::materialize_unsafe() const {
                     new_val.clear();
                     new_val.m_yyjson_doc = m_yyjson_doc;
                     new_val.m_yyjson_node = item;
-                    new_val.materialize();
+                    new_val.materialize_unsafe();
                     values.push_back(std::move(new_val));
                 }
             }
@@ -757,7 +757,7 @@ void UniValue::materialize_unsafe() const {
                         new_val.clear();
                         new_val.m_yyjson_doc = m_yyjson_doc;
                         new_val.m_yyjson_node = v;
-                        new_val.materialize();
+                        new_val.materialize_unsafe();
                         keys.push_back(std::move(k));
                         values.push_back(std::move(new_val));
                     }
@@ -782,13 +782,18 @@ void UniValue::materialize_unsafe() const {
  * For objects: Builds both `keys` and `values` vectors from the yyjson object
  *
  * Supports rematerialization when m_materialized is set to false (e.g., after
- * push_back/pushKV add to the yyjson tree). Uses mutex for thread-safety.
+ * push_back/pushKV add to the yyjson tree). Uses document-level mutex for thread-safety.
  *
- * @note Thread-safe: Uses std::mutex to protect materialization and allow
+ * @note Thread-safe: Uses document-level std::mutex to protect materialization and allow
  * re-entry when the object transitions back to non-materialized state.
+ * All UniValues sharing the same yyjson document share the same mutex.
  */
 void UniValue::materialize() const {
-    std::lock_guard<std::mutex> lock(m_materialize_mutex);
+    // If no document, nothing to materialize
+    if (!m_yyjson_doc || !m_yyjson_node) return;
+    
+    // Use document-level mutex for all UniValues sharing the same document
+    std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
     materialize_unsafe();
 }
 
@@ -825,7 +830,8 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
 
     if (m_yyjson_doc && m_yyjson_node) {
         // Synchronize materialization check and cache access to prevent data races
-        std::lock_guard<std::mutex> lock(m_materialize_mutex);
+        // Use document-level mutex for all UniValues sharing the same document
+        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -859,7 +865,8 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
 const std::string& UniValue::getValStr() const {
     if (m_yyjson_doc && m_yyjson_node) {
         // Synchronize materialization check and cache access to prevent data races
-        std::lock_guard<std::mutex> lock(m_materialize_mutex);
+        // Use document-level mutex for all UniValues sharing the same document
+        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -878,7 +885,8 @@ const std::string& UniValue::getValStr() const {
 bool UniValue::empty() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node) {
         // Synchronize materialization check and cache access to prevent data races
-        std::lock_guard<std::mutex> lock(m_materialize_mutex);
+        // Use document-level mutex for all UniValues sharing the same document
+        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -898,7 +906,8 @@ bool UniValue::empty() const {
 size_t UniValue::size() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node) {
         // Synchronize materialization check and cache access to prevent data races
-        std::lock_guard<std::mutex> lock(m_materialize_mutex);
+        // Use document-level mutex for all UniValues sharing the same document
+        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -955,7 +964,7 @@ void UniValue::push_back(UniValue val) {
             yyjson_mut_val* new_val = nullptr;
             if (val.m_yyjson_doc && val.m_yyjson_node) {
                 // val has its own yyjson tree - use yyjson's optimized copy function for mutable values
-                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add to array
                     throw std::bad_alloc();
@@ -965,16 +974,16 @@ void UniValue::push_back(UniValue val) {
                 // Create yyjson node directly from val's value
                 switch (val.typ) {
                     case VNULL:
-                        new_val = yyjson_mut_null(m_yyjson_doc.get());
+                        new_val = yyjson_mut_null(m_yyjson_doc->m_doc);
                         break;
                     case VBOOL:
-                        new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
+                        new_val = yyjson_mut_bool(m_yyjson_doc->m_doc, val.val == "1");
                         break;
                     case VNUM:
-                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc->m_doc, val.val.data(), val.val.size());
                         break;
                     case VSTR:
-                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc->m_doc, val.val.data(), val.val.size());
                         break;
                     default:
                         // Shouldn't happen for non-container types
@@ -1031,7 +1040,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
     if (m_yyjson_doc && m_yyjson_node) {
         // Always update the yyjson tree (primary storage)
         // Create key first, then value - if either fails, we throw
-        yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
+        yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc->m_doc, key.data(), key.size());
         if (!new_key) {
             // Key allocation failed, cannot add the pair
             throw std::bad_alloc();
@@ -1058,7 +1067,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
             if (val.m_yyjson_doc && val.m_yyjson_node) {
                 // val has its own yyjson tree - use yyjson's optimized copy function for mutable values
                 // This works for both materialized and non-materialized containers
-                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add the pair
                     throw std::bad_alloc();
@@ -1068,16 +1077,16 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 // Create yyjson node directly from val's value
                 switch (val.typ) {
                     case VNULL:
-                        new_val = yyjson_mut_null(m_yyjson_doc.get());
+                        new_val = yyjson_mut_null(m_yyjson_doc->m_doc);
                         break;
                     case VBOOL:
-                        new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
+                        new_val = yyjson_mut_bool(m_yyjson_doc->m_doc, val.val == "1");
                         break;
                     case VNUM:
-                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc->m_doc, val.val.data(), val.val.size());
                         break;
                     case VSTR:
-                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc->m_doc, val.val.data(), val.val.size());
                         break;
                     default:
                         // Shouldn't happen for non-container types
@@ -1141,7 +1150,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
         if (!use_legacy_path) {
             // Optimized path: assume keys are unique, skip duplicate checking
             // Create key first, then value - if either fails, we throw
-            yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), key.data(), key.size());
+            yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc->m_doc, key.data(), key.size());
             if (!new_key) {
                 // Key allocation failed, cannot add the pair
                 throw std::bad_alloc();
@@ -1153,7 +1162,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             if (val.m_yyjson_doc && val.m_yyjson_node) {
                 // val has its own yyjson tree - use yyjson's optimized copy function for mutable values
                 // This works for both materialized and non-materialized containers
-                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc.get(), val.m_yyjson_node);
+                new_val = yyjson_mut_val_mut_copy(m_yyjson_doc->m_doc, val.m_yyjson_node);
                 if (!new_val) {
                     // Copy failed, cannot add the pair
                     throw std::bad_alloc();
@@ -1163,16 +1172,16 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
                 // Create yyjson node directly from val's value
                 switch (val.typ) {
                     case VNULL:
-                        new_val = yyjson_mut_null(m_yyjson_doc.get());
+                        new_val = yyjson_mut_null(m_yyjson_doc->m_doc);
                         break;
                     case VBOOL:
-                        new_val = yyjson_mut_bool(m_yyjson_doc.get(), val.val == "1");
+                        new_val = yyjson_mut_bool(m_yyjson_doc->m_doc, val.val == "1");
                         break;
                     case VNUM:
-                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        new_val = (yyjson_mut_val*)yyjson_mut_rawncpy(m_yyjson_doc->m_doc, val.val.data(), val.val.size());
                         break;
                     case VSTR:
-                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc.get(), val.val.data(), val.val.size());
+                        new_val = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc->m_doc, val.val.data(), val.val.size());
                         break;
                     default:
                         // Shouldn't happen for non-container types
@@ -1249,7 +1258,8 @@ const UniValue& UniValue::operator[](const std::string& key) const {
 
     // Check if we have yyjson tree that needs materialization
     if (m_yyjson_doc && m_yyjson_node) {
-        std::lock_guard<std::mutex> lock(m_materialize_mutex);
+        // Use document-level mutex for all UniValues sharing the same document
+        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -1287,7 +1297,8 @@ const UniValue& UniValue::operator[](size_t index) const {
         return NullUniValue;
     if (m_yyjson_doc && m_yyjson_node) {
         // Synchronize materialization check and cache access to prevent data races
-        std::lock_guard<std::mutex> lock(m_materialize_mutex);
+        // Use document-level mutex for all UniValues sharing the same document
+        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }

@@ -34,8 +34,9 @@
  *
  * @par Thread Safety (WITH_YYJSON)
  * When compiled with WITH_YYJSON=ON, UniValue uses yyjson as the primary storage backend.
- * - Reading from const UniValue& is thread-safe: lazy materialization uses std::mutex
- *   to ensure thread-safe access and support rematerialization when state changes.
+ * - Reading from const UniValue& is thread-safe: lazy materialization uses a document-level std::mutex
+ *   (shared among all UniValues in the same yyjson document) to ensure thread-safe access and support
+ *   rematerialization when state changes. This avoids the per-node mutex overhead for large JSON documents.
  * - Copying containers preserves the yyjson tree via yyjson_mut_val_mut_copy(), avoiding
  *   the performance regression that occurred when copies unconditionally discarded trees.
  * - Modifying non-const UniValue objects requires external synchronization.
@@ -45,6 +46,8 @@
  * - Lazy materialization: legacy representation (keys/values) is populated on-demand
  * - Copy operations deep-copy yyjson trees to maintain performance through chained operations
  * - Use std::move when passing containers to push_back/pushKV to avoid unnecessary copies
+ * - Document-level locking: All UniValues sharing the same yyjson document share a single mutex,
+ *   reducing memory overhead from 40 bytes per node to 40 bytes per document
  */
 // NOLINTNEXTLINE(misc-no-recursion)
 class UniValue {
@@ -187,15 +190,67 @@ private:
 
 #ifdef WITH_YYJSON
     // yyjson primary storage
-    mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc; //!< Shared pointer to yyjson mutable document (primary storage)
+    /**
+     * @brief Wrapper struct that pairs a yyjson document with a mutex for thread-safe access.
+     *
+     * This struct is used to implement document-level locking, where all UniValue objects
+     * sharing the same yyjson document share a single mutex. This significantly reduces memory
+     * overhead compared to per-node mutexes (40 bytes per document vs 40 bytes per node).
+     *
+     * The struct is designed to be used exclusively with std::shared_ptr for automatic
+     * lifetime management. Direct instantiation on the stack is not recommended.
+     */
+    struct YyjsonDocWithMutex {
+        yyjson_mut_doc* m_doc{nullptr};             //!< Pointer to the yyjson mutable document
+        mutable std::mutex m_mutex;              //!< Document-level mutex for thread-safe materialization
+        
+        /**
+         * @brief Construct a new YyjsonDocWithMutex
+         * @param d Optional yyjson document pointer. If null, a new document is created.
+         */
+        explicit YyjsonDocWithMutex(yyjson_mut_doc* d = nullptr) : m_doc(d ? d : yyjson_mut_doc_new(nullptr)) {}
+        
+        /**
+         * @brief Destroy the YyjsonDocWithMutex
+         * Frees the yyjson document if it exists.
+         */
+        ~YyjsonDocWithMutex() { if (m_doc) yyjson_mut_doc_free(m_doc); }
+        
+        // Prevent copying - shared_ptr handles ownership
+        YyjsonDocWithMutex(const YyjsonDocWithMutex&) = delete;
+        YyjsonDocWithMutex& operator=(const YyjsonDocWithMutex&) = delete;
+        
+        // Allow move operations
+        /**
+         * @brief Move constructor
+         * Transfers ownership of the document from other to this.
+         */
+        YyjsonDocWithMutex(YyjsonDocWithMutex&& other) noexcept : m_doc(other.m_doc), m_mutex() {
+            other.m_doc = nullptr;
+        }
+        
+        /**
+         * @brief Move assignment operator
+         * Transfers ownership of the document from other to this.
+         */
+        YyjsonDocWithMutex& operator=(YyjsonDocWithMutex&& other) noexcept {
+            if (this != &other) {
+                if (m_doc) yyjson_mut_doc_free(m_doc);
+                m_doc = other.m_doc;
+                other.m_doc = nullptr;
+            }
+            return *this;
+        }
+    };
+    
+    mutable std::shared_ptr<YyjsonDocWithMutex> m_yyjson_doc; //!< Shared pointer to yyjson mutable document with document-level mutex
     mutable yyjson_mut_val* m_yyjson_node{nullptr};    //!< Pointer to the root node in the yyjson tree
     mutable std::atomic<bool> m_materialized{false};  //!< Whether lazy caches (val/keys/values) have been populated
-    mutable std::mutex m_materialize_mutex;          //!< Protects materialization to allow re-entry when m_materialized changes
 
     void materialize() const;              // Populate lazy caches from yyjson
     void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
-    void materialize_unsafe() const;      // Populate lazy caches without locking (caller must hold m_materialize_mutex)
-    static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr
+    void materialize_unsafe() const;      // Populate lazy caches without locking (caller must hold doc->mutex)
+    static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr (legacy, kept for compatibility)
 #endif
 
     void checkType(const VType& expected) const;

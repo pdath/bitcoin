@@ -267,10 +267,10 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
 
     if (typ == VSTR && m_yyjson_doc) {
         can_use_yyjson_direct = true;
-        doc_to_use = m_yyjson_doc.get();
+        doc_to_use = m_yyjson_doc->m_doc;
     } else if ((typ == VARR || typ == VOBJ) && m_yyjson_doc) {
         can_use_yyjson_direct = true;
-        doc_to_use = m_yyjson_doc.get();
+        doc_to_use = m_yyjson_doc->m_doc;
     }
 
     // Use yyjson_mut_write for standard indentation (0 or 2) and when indentLevel is 1 (root level)
