@@ -115,7 +115,7 @@ std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent,
     }
 
     // Access members directly to avoid deadlock (we already hold the document mutex)
-    switch (typ.load()) {
+    switch (typ) {
         case VNULL:
             return "null";
         case VBOOL:
@@ -199,24 +199,6 @@ std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent,
 }
 
 /**
- * @brief Recursively serialize a UniValue to JSON string
- *
- * Safe version: Acquires the document mutex before accessing materialized state.
- * This function handles the materialized representation (val, keys, values vectors)
- * for serialization. It's used as a fallback when we need to serialize from the
- * materialized cache rather than directly from the yyjson tree.
- *
- * @param uv The UniValue to serialize
- * @param prettyIndent Indentation level for pretty printing (0 for compact)
- * @param indentLevel Current nesting level for indentation
- * @return JSON string representation of the value
- */
-static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel) {
-    // Safe version: acquire document lock if needed, then use member function
-    return uv.writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
-}
-
-/**
  * @brief Write a VSTR without yyjson document using a temporary document
  *
  * Unsafe version: assumes the caller holds the document mutex.
@@ -270,7 +252,7 @@ static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int pret
  */
 std::string UniValue::writeYyjson_unsafe(unsigned int prettyIndent, unsigned int indentLevel) const {
     // Access members directly since caller holds the lock
-    VType my_typ = typ.load();
+    VType my_typ = typ;
     
     // Fast path for VNUM: return val directly (already properly formatted)
     if (my_typ == VNUM) {

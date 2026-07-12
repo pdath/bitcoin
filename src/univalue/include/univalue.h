@@ -106,7 +106,7 @@ public:
     bool empty() const { return (values.size() == 0); }
     size_t size() const { return values.size(); }
 #else
-    enum VType getType() const { return typ.load(); }
+    enum VType getType() const { return typ; }
     const std::string& getValStr() const;
     const std::string& getValStr_unsafe() const { return val; } // Unsafe: caller must hold document mutex
     bool empty() const;
@@ -131,14 +131,14 @@ public:
     bool isArray() const { return (typ == VARR); }
     bool isObject() const { return (typ == VOBJ); }
 #else
-    bool isNull() const { return (typ.load() == VNULL); }
+    bool isNull() const { return (typ == VNULL); }
     bool isTrue() const;
     bool isFalse() const;
-    bool isBool() const { return (typ.load() == VBOOL); }
-    bool isStr() const { return (typ.load() == VSTR); }
-    bool isNum() const { return (typ.load() == VNUM); }
-    bool isArray() const { return (typ.load() == VARR); }
-    bool isObject() const { return (typ.load() == VOBJ); }
+    bool isBool() const { return (typ == VBOOL); }
+    bool isStr() const { return (typ == VSTR); }
+    bool isNum() const { return (typ == VNUM); }
+    bool isArray() const { return (typ == VARR); }
+    bool isObject() const { return (typ == VOBJ); }
 #endif
 
     void push_back(UniValue val);
@@ -172,11 +172,7 @@ public:
 
 private:
     // Common members - mutable only when WITH_YYJSON for lazy materialization
-#ifdef WITH_YYJSON
-    mutable std::atomic<UniValue::VType> typ;
-#else
-    UniValue::VType typ;
-#endif
+    mutable UniValue::VType typ;
 #ifdef WITH_YYJSON
     mutable
 #endif
@@ -247,7 +243,7 @@ private:
     
     mutable std::shared_ptr<YyjsonDocWithMutex> m_yyjson_doc; //!< Shared pointer to yyjson mutable document with document-level mutex
     mutable yyjson_mut_val* m_yyjson_node{nullptr};    //!< Pointer to the root node in the yyjson tree
-    mutable std::atomic<bool> m_materialized{false};  //!< Whether lazy caches (val/keys/values) have been populated
+    mutable bool m_materialized{false};  //!< Whether lazy caches (val/keys/values) have been populated
 
     void materialize() const;              // Populate lazy caches from yyjson
     void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
