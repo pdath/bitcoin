@@ -93,35 +93,39 @@ static std::string postProcessYyjsonOutput(std::string result) {
 }
 
 /**
- * @brief Recursively serialize a UniValue to JSON string
+ * @brief Recursively serialize a UniValue to JSON string (unsafe version)
  *
  * This function handles the materialized representation (val, keys, values vectors)
- * for serialization. It's used as a fallback when we need to serialize from the
- * materialized cache rather than directly from the yyjson tree.
+ * for serialization. It assumes the document mutex is already held by the caller.
+ * It's used as a fallback when we need to serialize from the materialized cache rather
+ * than directly from the yyjson tree.
  *
- * @param uv The UniValue to serialize
+ * Unsafe version: assumes the caller holds the document mutex. Only accesses member
+ * variables directly or calls other unsafe functions.
+ *
  * @param prettyIndent Indentation level for pretty printing (0 for compact)
  * @param indentLevel Current nesting level for indentation
  * @return JSON string representation of the value
  */
-static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel) {
+std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent, unsigned int indentLevel) const {
     const bool pretty = prettyIndent > 0;
     std::string indentStr;
     if (pretty) {
         ::indentStr(prettyIndent, indentLevel, indentStr);
     }
 
-    switch (uv.getType()) {
-        case UniValue::VNULL:
+    // Access members directly to avoid deadlock (we already hold the document mutex)
+    switch (typ.load()) {
+        case VNULL:
             return "null";
-        case UniValue::VBOOL:
-            return uv.isTrue() ? "true" : "false";
-        case UniValue::VNUM:
-            return uv.getValStr(); // Preserve exact number formatting
-        case UniValue::VSTR:
-            return '"' + json_escape(uv.getValStr()) + '"';
-        case UniValue::VARR: {
-            if (uv.empty()) {
+        case VBOOL:
+            return val == "1" ? "true" : "false";
+        case VNUM:
+            return val; // Preserve exact number formatting
+        case VSTR:
+            return '"' + json_escape(val) + '"';
+        case VARR: {
+            if (values.empty()) {
                 if (!pretty) return "[]";
                 std::string s = "[";
                 s += "\n";
@@ -135,10 +139,10 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
             }
             std::string s = "[";
             if (pretty) s += "\n";
-            const auto& values = uv.getValues();
             for (size_t i = 0; i < values.size(); ++i) {
                 if (pretty) s += indentStr;
-                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel + 1);
+                // For child values, use their safe writeYyjson() which will acquire their own document locks
+                s += values[i].writeYyjson(prettyIndent, indentLevel + 1);
                 if (i < values.size() - 1) {
                     s += ",";
                 }
@@ -154,8 +158,8 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
             s += "]";
             return s;
         }
-        case UniValue::VOBJ: {
-            if (uv.empty()) {
+        case VOBJ: {
+            if (keys.empty()) {
                 if (!pretty) return "{}";
                 std::string s = "{";
                 s += "\n";
@@ -169,13 +173,12 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
             }
             std::string s = "{";
             if (pretty) s += "\n";
-            const auto& keys = uv.getKeys();
-            const auto& values = uv.getValues();
             for (size_t i = 0; i < keys.size(); ++i) {
                 if (pretty) s += indentStr;
                 s += '"' + json_escape(keys[i]) + std::string("\":");
                 if (pretty) s += " ";
-                s += writeYyjsonValueInternal(values[i], prettyIndent, indentLevel + 1);
+                // For child values, use their safe writeYyjson() which will acquire their own document locks
+                s += values[i].writeYyjson(prettyIndent, indentLevel + 1);
                 if (i < keys.size() - 1) {
                     s += ",";
                 }
@@ -196,18 +199,36 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
 }
 
 /**
+ * @brief Recursively serialize a UniValue to JSON string
+ *
+ * Safe version: Acquires the document mutex before accessing materialized state.
+ * This function handles the materialized representation (val, keys, values vectors)
+ * for serialization. It's used as a fallback when we need to serialize from the
+ * materialized cache rather than directly from the yyjson tree.
+ *
+ * @param uv The UniValue to serialize
+ * @param prettyIndent Indentation level for pretty printing (0 for compact)
+ * @param indentLevel Current nesting level for indentation
+ * @return JSON string representation of the value
+ */
+static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int prettyIndent, unsigned int indentLevel) {
+    // Safe version: acquire document lock if needed, then use member function
+    return uv.writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
+}
+
+/**
  * @brief Write a VSTR without yyjson document using a temporary document
  *
  * For manually constructed string primitives (VSTR without m_yyjson_doc),
  * create a temporary document for serialization using yyjson_mut_write.
  *
+ * @param str The string value to serialize
  * @param prettyIndent Indentation level for pretty printing (0 for compact)
  * @return JSON string representation
  */
-static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent) {
+static std::string writeYyjsonStrPrimitive(const std::string& str, unsigned int prettyIndent) {
     // Create a temporary document and node for this primitive string
     yyjson_mut_doc* temp_doc = yyjson_mut_doc_new(nullptr);
-    const std::string& str = uv.getValStr();
     yyjson_mut_val* temp_node = (yyjson_mut_val*)yyjson_mut_strncpy(temp_doc, str.data(), str.size());
     yyjson_mut_doc_set_root(temp_doc, temp_node);
 
@@ -226,33 +247,40 @@ static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int pret
 }
 
 /**
- * @brief Serializes the UniValue to a JSON string
+ * @brief Serializes the UniValue to a JSON string (unsafe version)
  *
  * Optimized implementation using yyjson_mut_write for maximum performance:
  * - For VNUM, VNULL, VBOOL: Returns pre-formatted strings directly
  * - For VSTR with document: Uses yyjson_mut_write
  * - For VSTR without document: Creates temporary document and uses yyjson_mut_write
  * - For VARR, VOBJ: Uses yyjson_mut_write directly on the document
- * - For custom indentation (prettyIndent != 0 && prettyIndent != 2): Falls back to writeYyjsonValueInternal
+ * - For custom indentation (prettyIndent != 0 && prettyIndent != 2): Falls back to writeYyjsonValueInternal_unsafe
+ *
+ * Unsafe version: assumes the caller holds the document mutex. Only accesses member
+ * variables directly or calls other unsafe functions.
  *
  * Post-processing handles DEL (0x7f) character escaping to match UniValue behaviour.
  *
  * @param prettyIndent Indentation level for pretty printing (0 for compact, 2 for 2-space pretty)
+ * @param indentLevel Current nesting level for indentation
  * @return JSON string representation
  */
-std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indentLevel) const {
+std::string UniValue::writeYyjson_unsafe(unsigned int prettyIndent, unsigned int indentLevel) const {
+    // Access members directly since caller holds the lock
+    VType my_typ = typ.load();
+    
     // Fast path for VNUM: return val directly (already properly formatted)
-    if (typ == VNUM) {
+    if (my_typ == VNUM) {
         return val;
     }
 
     // Handle VNULL: return "null"
-    if (typ == VNULL) {
+    if (my_typ == VNULL) {
         return "null";
     }
 
     // Handle VBOOL: convert "1"/"" to "true"/"false"
-    if (typ == VBOOL) {
+    if (my_typ == VBOOL) {
         return val == "1" ? "true" : "false";
     }
 
@@ -265,16 +293,16 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
     bool can_use_yyjson_direct = false;
     yyjson_mut_doc* doc_to_use = nullptr;
 
-    if (typ == VSTR && m_yyjson_doc) {
+    if (my_typ == VSTR && m_yyjson_doc) {
         can_use_yyjson_direct = true;
         doc_to_use = m_yyjson_doc->m_doc;
-    } else if ((typ == VARR || typ == VOBJ) && m_yyjson_doc) {
+    } else if ((my_typ == VARR || my_typ == VOBJ) && m_yyjson_doc) {
         can_use_yyjson_direct = true;
         doc_to_use = m_yyjson_doc->m_doc;
     }
 
     // Use yyjson_mut_write for standard indentation (0 or 2) and when indentLevel is 1 (root level)
-    // For non-standard indentation or non-root levels, fall back to writeYyjsonValueInternal
+    // For non-standard indentation or non-root levels, fall back to writeYyjsonValueInternal_unsafe
     // Additionally, require m_yyjson_node to be the document root to avoid serializing
     // the entire document when writing a materialized child node
     bool use_fast_path = can_use_yyjson_direct && doc_to_use && (prettyIndent == 0 || prettyIndent == 2) && indentLevel == 1 &&
@@ -282,17 +310,17 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
 
     if (use_fast_path) {
         // For empty containers, yyjson's pretty-printing indentation doesn't match the legacy behaviour
-        // so fall back to writeYyjsonValueInternal for consistent formatting
+        // so fall back to writeYyjsonValueInternal_unsafe for consistent formatting
         // Check for emptiness without calling empty() to avoid forcing materialization
         bool is_empty_container = false;
-        if (typ == VARR || typ == VOBJ) {
+        if (my_typ == VARR || my_typ == VOBJ) {
             // Check the yyjson tree directly to avoid materialization
             is_empty_container = (yyjson_mut_get_type(m_yyjson_node) == YYJSON_TYPE_ARR)
                 ? (yyjson_mut_arr_size(m_yyjson_node) == 0)
                 : (yyjson_mut_obj_size(m_yyjson_node) == 0);
         }
         if (is_empty_container) {
-            return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
+            return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
         }
 
         yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
@@ -300,7 +328,7 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
         char* output = yyjson_mut_write_opts(doc_to_use, flags, nullptr, &len, nullptr);
         if (!output) {
             // Handle write failure by falling through to alternative path
-            return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
+            return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
         }
         std::string result(output, len);
         free(output);
@@ -313,7 +341,7 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
     // keeps empty containers compact ([]/{}), but UniValue uses indented formatting
     if (m_yyjson_node && !use_fast_path && (prettyIndent == 0 || prettyIndent == 2)) {
         // Check if this node is an empty container (array or object with no children)
-        // If so, fall through to writeYyjsonValueInternal for correct formatting
+        // If so, fall through to writeYyjsonValueInternal_unsafe for correct formatting
         yyjson_type node_type = yyjson_mut_get_type(m_yyjson_node);
         bool is_empty_container = false;
         if (prettyIndent > 0 && (node_type == YYJSON_TYPE_ARR || node_type == YYJSON_TYPE_OBJ)) {
@@ -331,17 +359,55 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
                 return postProcessYyjsonOutput(std::move(result));
             }
         }
-        // Fall through to writeYyjsonValueInternal on failure or for empty containers
+        // Fall through to writeYyjsonValueInternal_unsafe on failure or for empty containers
+        return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
     }
 
     // For VSTR without document, use temporary document
-    if (typ == VSTR && !m_yyjson_doc && !m_yyjson_node) {
-        return writeYyjsonStrPrimitive(*this, prettyIndent);
+    if (my_typ == VSTR && !m_yyjson_doc && !m_yyjson_node) {
+        return writeYyjsonStrPrimitive(val, prettyIndent);
     }
 
     // Fallback for custom indentation levels, non-root levels, or other cases
-    // Use writeYyjsonValueInternal which handles all formatting correctly with indentLevel
-    return writeYyjsonValueInternal(*this, prettyIndent, indentLevel);
+    // Use writeYyjsonValueInternal_unsafe which handles all formatting correctly with indentLevel
+    return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
+}
+
+/**
+ * @brief Serializes the UniValue to a JSON string
+ *
+ * Safe version: Acquires the document mutex before calling the unsafe version.
+ * Optimized implementation using yyjson_mut_write for maximum performance:
+ * - For VNUM, VNULL, VBOOL: Returns pre-formatted strings directly
+ * - For VSTR with document: Uses yyjson_mut_write
+ * - For VSTR without document: Creates temporary document and uses yyjson_mut_write
+ * - For VARR, VOBJ: Uses yyjson_mut_write directly on the document
+ * - For custom indentation (prettyIndent != 0 && prettyIndent != 2): Falls back to writeYyjsonValueInternal_unsafe
+ *
+ * Post-processing handles DEL (0x7f) character escaping to match UniValue behaviour.
+ *
+ * Thread-safety: Holds document-level mutex during yyjson tree access to prevent
+ * concurrent mutations from corrupting the tree during serialization.
+ *
+ * @param prettyIndent Indentation level for pretty printing (0 for compact, 2 for 2-space pretty)
+ * @param indentLevel Current nesting level for indentation
+ * @return JSON string representation
+ */
+std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indentLevel) const {
+    // Snapshot document pointer before acquiring lock
+    auto doc_holder = m_yyjson_doc;
+    
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        // Re-check under the lock: ensure doc_holder is still current and node is valid
+        if (m_yyjson_doc == doc_holder && m_yyjson_node) {
+            return writeYyjson_unsafe(prettyIndent, indentLevel);
+        }
+    }
+    
+    // No document or document changed, use fallback path
+    // This will use the materialized representation via writeYyjsonValueInternal
+    return writeYyjsonValueInternal_unsafe(prettyIndent, indentLevel);
 }
 
 /**

@@ -34,13 +34,12 @@
  *
  * @par Thread Safety (WITH_YYJSON)
  * When compiled with WITH_YYJSON=ON, UniValue uses yyjson as the primary storage backend.
- * - Reading from const UniValue& is thread-safe: lazy materialization uses a document-level std::mutex
- *   (shared among all UniValues in the same yyjson document) to ensure thread-safe access and support
- *   rematerialization when state changes. This avoids the per-node mutex overhead for large JSON documents.
+ * - Concurrent const operations are safe while no thread mutates a UniValue sharing the same document.
+ *   References and iterators returned by accessors require external synchronization for their entire use.
  * - Copying containers preserves the yyjson tree via yyjson_mut_val_mut_copy(), avoiding
  *   the performance regression that occurred when copies unconditionally discarded trees.
- * - Modifying non-const UniValue objects (push_back, pushKV, pushKVEnd) is thread-safe: uses the
- *   same document-level mutex to protect yyjson tree modifications.
+ * - Individual mutation calls serialize yyjson tree changes, but callers must synchronize
+ *   mutations against readers and escaped references or iterators.
  *
  * @par Performance Considerations (WITH_YYJSON)
  * - Containers (arrays/objects) use yyjson as primary storage for efficient building
@@ -259,8 +258,10 @@ private:
     bool findKey(const std::string& key, size_t& retIdx) const;
 
 #ifdef WITH_YYJSON
-    // yyjson-specific write method
+    // yyjson-specific write methods
     std::string writeYyjson(unsigned int prettyIndent, unsigned int indentLevel) const;
+    std::string writeYyjson_unsafe(unsigned int prettyIndent, unsigned int indentLevel) const; // Unsafe: caller must hold document mutex
+    std::string writeYyjsonValueInternal_unsafe(unsigned int prettyIndent, unsigned int indentLevel) const; // Unsafe: caller must hold document mutex
 #else
     // Original write methods
     void writeArray(unsigned int prettyIndent, unsigned int indentLevel, std::string& s) const;
