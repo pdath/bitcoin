@@ -252,7 +252,9 @@ private:
 #endif
 
     void checkType(const VType& expected) const;
+    void checkType_unsafe(const VType& expected) const; // Unsafe: caller must hold document mutex
     bool findKey(const std::string& key, size_t& retIdx) const;
+    bool findKey_unsafe(const std::string& key, size_t& retIdx) const; // Unsafe: caller must hold document mutex
 
 #ifdef WITH_YYJSON
     // yyjson-specific write methods

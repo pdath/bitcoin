@@ -270,13 +270,28 @@ UniValue::UniValue(UniValue&& other) noexcept
     clear();
 
     // Move all state from other
-    typ = other.typ;
-    val = std::move(other.val);
-    keys = std::move(other.keys);
-    values = std::move(other.values);
-    m_yyjson_doc = std::move(other.m_yyjson_doc);
-    m_yyjson_node = other.m_yyjson_node;
-    m_materialized = other.m_materialized;
+    // For move operations, other is typically a temporary or about to be destroyed,
+    // but we still acquire its mutex for thread-safety if it has a document
+    auto other_doc_holder = other.m_yyjson_doc;
+    if (other_doc_holder) {
+        std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
+        typ = other.typ;
+        val = std::move(other.val);
+        keys = std::move(other.keys);
+        values = std::move(other.values);
+        m_yyjson_doc = std::move(other.m_yyjson_doc);
+        m_yyjson_node = other.m_yyjson_node;
+        m_materialized = other.m_materialized;
+    } else {
+        // Other has no document, no locking needed
+        typ = other.typ;
+        val = std::move(other.val);
+        keys = std::move(other.keys);
+        values = std::move(other.values);
+        m_yyjson_doc = std::move(other.m_yyjson_doc);
+        m_yyjson_node = other.m_yyjson_node;
+        m_materialized = other.m_materialized;
+    }
 
     // Reset other to safe state
     other.typ = VNULL;
@@ -302,40 +317,65 @@ UniValue& UniValue::operator=(const UniValue& other) {
         // to handle self-referential assignments like obj = obj["child"].
         // This ensures that clearing this->keys/values doesn't invalidate 'other'
         // when other is a reference into this's data structures.
-        const VType other_typ = other.typ;
-        const std::string other_val = other.val;
+        VType other_typ;
+        std::string other_val;
         std::vector<std::string> other_keys;
         std::vector<UniValue> other_values;
-        bool other_has_yyjson = other.m_yyjson_doc && other.m_yyjson_node;
-        bool other_materialized = other.m_materialized;
-        
-        // Snapshot yyjson state to use after clear() - retain strong reference to doc
+        bool other_has_yyjson = false;
+        bool other_materialized = false;
         std::shared_ptr<YyjsonDocWithMutex> other_doc;
         yyjson_mut_val* other_node = nullptr;
-        if (other_has_yyjson) {
-            other_doc = other.m_yyjson_doc;  // Retain strong reference before clear()
-            other_node = other.m_yyjson_node;
-        }
-
-        // For containers, snapshot the data we'll need after clear()
-        // Note: Even if other has a yyjson tree, we may need keys/values if tree copy fails
-        if (other_typ == VARR || other_typ == VOBJ) {
+        
+        // Snapshot other's state under its document mutex
+        auto other_doc_holder = other.m_yyjson_doc;
+        if (other_doc_holder) {
+            std::lock_guard<std::mutex> lock(other_doc_holder->m_mutex);
+            other_typ = other.typ;
+            other_val = other.val;
+            other_has_yyjson = other.m_yyjson_doc && other.m_yyjson_node;
+            other_materialized = other.m_materialized;
+            
             if (other_has_yyjson) {
-                // Snapshot keys/values in case tree copy fails and we need fallback
-                const_cast<UniValue&>(other).materialize();
-                other_keys = other.keys;
-                other_values = other.values;
-                other_materialized = true;
-            } else if (other_materialized) {
-                // Already materialized without tree, snapshot keys/values
-                other_keys = other.keys;
-                other_values = other.values;
-            } else {
-                // Not materialized and no tree, need to materialize first then snapshot
-                const_cast<UniValue&>(other).materialize();
-                other_keys = other.keys;
-                other_values = other.values;
-                other_materialized = true;
+                other_doc = other.m_yyjson_doc;
+                other_node = other.m_yyjson_node;
+            }
+
+            // For containers, snapshot the data we'll need after clear()
+            if (other_typ == VARR || other_typ == VOBJ) {
+                if (other_has_yyjson) {
+                    // Materialize under existing lock
+                    const_cast<UniValue&>(other).materialize_unsafe();
+                    other_keys = other.keys;
+                    other_values = other.values;
+                    other_materialized = true;
+                } else if (other_materialized) {
+                    other_keys = other.keys;
+                    other_values = other.values;
+                } else {
+                    const_cast<UniValue&>(other).materialize_unsafe();
+                    other_keys = other.keys;
+                    other_values = other.values;
+                    other_materialized = true;
+                }
+            }
+        } else {
+            // Other has no document, no locking needed
+            other_typ = other.typ;
+            other_val = other.val;
+            other_has_yyjson = false;
+            other_materialized = other.m_materialized;
+            
+            // For containers without documents, snapshot keys/values
+            if (other_typ == VARR || other_typ == VOBJ) {
+                if (other_materialized) {
+                    other_keys = other.keys;
+                    other_values = other.values;
+                } else {
+                    const_cast<UniValue&>(other).materialize();
+                    other_keys = other.keys;
+                    other_values = other.values;
+                    other_materialized = true;
+                }
             }
         }
 
@@ -692,13 +732,23 @@ void UniValue::checkType(const VType& expected) const {
     auto doc_holder = m_yyjson_doc;
     if (doc_holder) {
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (typ != expected) {
-            throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
-        }
+        checkType_unsafe(expected);
     } else {
-        if (typ != expected) {
-            throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
-        }
+        checkType_unsafe(expected);
+    }
+}
+
+/**
+ * @brief Check if this UniValue is of the expected type (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Throws type_error if the type doesn't match.
+ *
+ * @param expected The expected VType
+ */
+void UniValue::checkType_unsafe(const VType& expected) const {
+    if (typ != expected) {
+        throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
     }
 }
 /**
@@ -878,21 +928,30 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
     auto doc_holder = m_yyjson_doc;
     if (doc_holder) {
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (typ != VOBJ) return false;
+        return findKey_unsafe(key, retIdx);
+    }
+    // No document, check type and search without locking
+    return findKey_unsafe(key, retIdx);
+}
 
-        if (m_yyjson_doc && m_yyjson_node) {
-            if (!m_materialized) {
-                materialize_unsafe();
-            }
-            for (size_t i = 0; i < keys.size(); ++i) {
-                if (keys[i] == key) {
-                    retIdx = i;
-                    return true;
-                }
-            }
-            return false;
+/**
+ * @brief Find a key in an object (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Searches for a key in the object's keys vector.
+ * Triggers materialization if the object hasn't been materialized yet.
+ *
+ * @param key The key to find
+ * @param retIdx Output parameter for the index if found
+ * @return true if key was found, false otherwise
+ */
+bool UniValue::findKey_unsafe(const std::string& key, size_t& retIdx) const {
+    if (typ != VOBJ) return false;
+
+    if (m_yyjson_doc && m_yyjson_node) {
+        if (!m_materialized) {
+            materialize_unsafe();
         }
-
         for (size_t i = 0; i < keys.size(); ++i) {
             if (keys[i] == key) {
                 retIdx = i;
@@ -901,8 +960,7 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
         }
         return false;
     }
-    // No document, check type and search without locking
-    if (typ != VOBJ) return false;
+
     for (size_t i = 0; i < keys.size(); ++i) {
         if (keys[i] == key) {
             retIdx = i;
@@ -1000,11 +1058,19 @@ size_t UniValue::size() const {
  * @param new_cap The new capacity to reserve
  */
 void UniValue::reserve(size_t new_cap) {
-    checkType(VARR);
-    if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
+    // Acquire document mutex to protect yyjson tree access
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VARR);
+        if (m_yyjson_node && !m_materialized) {
+            materialize_unsafe();
+        }
+        values.reserve(new_cap);
+    } else {
+        checkType_unsafe(VARR);
+        values.reserve(new_cap);
     }
-    values.reserve(new_cap);
 }
 
 /**
@@ -1021,8 +1087,6 @@ void UniValue::reserve(size_t new_cap) {
  * @note Thread-safe: Uses document-level mutex to protect yyjson tree modifications
  */
 void UniValue::push_back(UniValue val) {
-    checkType(VARR);
-
     bool use_legacy_path = false;
 
     // Add to yyjson array (primary storage) or to materialized representation
@@ -1030,6 +1094,7 @@ void UniValue::push_back(UniValue val) {
         // Hold a local shared_ptr to keep document alive across materialize_unsafe()
         auto doc_holder = m_yyjson_doc;
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VARR);
         
         // Check if we need to use legacy path (val is a container without yyjson tree)
         if (val.typ == VOBJ || val.typ == VARR) {
@@ -1089,6 +1154,7 @@ void UniValue::push_back(UniValue val) {
     if (m_yyjson_doc && m_yyjson_node) {
         auto doc_holder = m_yyjson_doc;
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VARR);
         materialize_unsafe();
         values.push_back(std::move(val));
         // Clear yyjson state to ensure writeYyjson() uses legacy representation
@@ -1097,6 +1163,7 @@ void UniValue::push_back(UniValue val) {
         m_materialized = true;  // Legacy representation is now up to date
     } else {
         // No document, use legacy path directly
+        checkType_unsafe(VARR);
         values.push_back(std::move(val));
         m_materialized = true;
     }
@@ -1116,14 +1183,13 @@ void UniValue::push_back(UniValue val) {
  * @note Thread-safe: Uses document-level mutex to protect yyjson tree modifications
  */
 void UniValue::pushKV(std::string key, UniValue val) {
-    checkType(VOBJ);
-
     bool use_legacy_path = false;
 
     if (m_yyjson_doc && m_yyjson_node) {
         // Hold a local shared_ptr to keep document alive across materialize_unsafe()
         auto doc_holder = m_yyjson_doc;
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
         
         // Always update the yyjson tree (primary storage)
         // Create key first, then value - if either fails, we throw
@@ -1219,6 +1285,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
     if (m_yyjson_doc && m_yyjson_node) {
         auto doc_holder = m_yyjson_doc;
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
         materialize_unsafe();
         // Search the materialized cache directly under the existing lock
         // (don't call findKey() as it would try to relock the mutex)
@@ -1245,6 +1312,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
         // No document, use legacy path directly
         // Note: This path doesn't need locking as there's no document
         // But we still need to handle the case where we're modifying a materialized object
+        checkType_unsafe(VOBJ);
         if (typ == VOBJ) {
             for (size_t i = 0; i < keys.size(); ++i) {
                 if (keys[i] == key) {
@@ -1270,14 +1338,13 @@ void UniValue::pushKV(std::string key, UniValue val) {
  * @note Thread-safe: Uses document-level mutex to protect yyjson tree modifications
  */
 void UniValue::pushKVEnd(std::string key, UniValue val) {
-    checkType(VOBJ);
-
     bool use_legacy_path = false;
 
     if (m_yyjson_doc && m_yyjson_node) {
         // Hold a local shared_ptr to keep document alive across materialize_unsafe()
         auto doc_holder = m_yyjson_doc;
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
         
         // Check if we need to use legacy path (val is a container without yyjson tree)
         if (val.typ == VOBJ || val.typ == VARR) {
@@ -1358,6 +1425,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
     if (m_yyjson_doc && m_yyjson_node) {
         auto doc_holder = m_yyjson_doc;
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
         materialize_unsafe();
         // Add to legacy representation directly under the existing lock
         keys.push_back(std::move(key));
@@ -1368,6 +1436,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
         m_materialized = true;  // Legacy representation is now up to date
     } else {
         // No document, use legacy path directly
+        checkType_unsafe(VOBJ);
         keys.push_back(std::move(key));
         values.push_back(std::move(val));
         m_materialized = true;
@@ -1384,12 +1453,20 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
  * @param obj The object to merge from (must be an object)
  */
 void UniValue::pushKVs(UniValue obj) {
-    checkType(VOBJ);
-    obj.checkType(VOBJ);
-
     // Materialize obj if needed
     if (!obj.m_materialized) {
         obj.materialize();
+    }
+
+    // Now acquire this's document mutex and check type
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
+        obj.checkType(VOBJ);  // obj may have its own document, so use safe version
+    } else {
+        checkType_unsafe(VOBJ);
+        obj.checkType(VOBJ);
     }
 
     for (size_t i = 0; i < obj.keys.size(); ++i)
@@ -1529,11 +1606,13 @@ bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTy
  */
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
-    checkType(VARR);
     // Always snapshot the input vector to avoid iterator invalidation from self-append
     // This handles cases like arr.push_backV(arr.values) and nested cases like arr.push_backV(arr[0].values)
     // The snapshot ensures stable iteration even if push_back causes reallocation of this->values
     std::vector<UniValue> snapshot = vec;
+    
+    // Now check type and push each value
+    // push_back will acquire the lock, so we don't need to do it here
     for (const auto& v : snapshot) {
         push_back(v);
     }
