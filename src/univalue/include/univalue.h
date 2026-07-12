@@ -25,6 +25,11 @@
 #include <yyjson/yyjson.h>
 #endif
 
+class UniValue;
+#ifdef WITH_YYJSON
+std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent);
+#endif
+
 /**
  * @class UniValue
  * @brief A universal value class for JSON data representation.
@@ -108,11 +113,8 @@ public:
 #else
     enum VType getType() const { return typ; }
     const std::string& getValStr() const;
-    const std::string& getValStr_unsafe() const { return val; } // Unsafe: caller must hold document mutex
     bool empty() const;
-    bool empty_unsafe() const; // Unsafe: caller must hold document mutex
     size_t size() const;
-    size_t size_unsafe() const; // Unsafe: caller must hold document mutex
 #endif
 
     void reserve(size_t new_cap);
@@ -120,9 +122,7 @@ public:
     void getObjMap(std::map<std::string,UniValue>& kv) const;
     bool checkObject(const std::map<std::string,UniValue::VType>& memberTypes) const;
     const UniValue& operator[](const std::string& key) const;
-    const UniValue& operator_string_unsafe(const std::string& key) const; // Unsafe: caller must hold document mutex
     const UniValue& operator[](size_t index) const;
-    const UniValue& operator_index_unsafe(size_t index) const; // Unsafe: caller must hold document mutex
     bool exists(const std::string& key) const { size_t i; return findKey(key, i); }
 
 #ifndef WITH_YYJSON
@@ -212,7 +212,17 @@ private:
          * @brief Construct a new YyjsonDocWithMutex
          * @param d Optional yyjson document pointer. If null, a new document is created.
          */
-        explicit YyjsonDocWithMutex(yyjson_mut_doc* d = nullptr) : m_doc(d ? d : yyjson_mut_doc_new(nullptr)) {}
+        explicit YyjsonDocWithMutex(yyjson_mut_doc* d = nullptr)
+        {
+            if (d) {
+                m_doc = d;
+            } else {
+                m_doc = yyjson_mut_doc_new(nullptr);
+                if (!m_doc) {
+                    throw std::bad_alloc();
+                }
+            }
+        }
         
         /**
          * @brief Destroy the YyjsonDocWithMutex
@@ -254,6 +264,12 @@ private:
     void materialize() const;              // Populate lazy caches from yyjson
     void materializeIfNeeded() const;      // Centralized guard to materialize on-demand if needed
     void materialize_unsafe() const;      // Populate lazy caches without locking (caller must hold doc->mutex)
+    friend std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent);
+    const std::string& getValStr_unsafe() const { return val; } // Unsafe: caller must hold document mutex
+    bool empty_unsafe() const; // Unsafe: caller must hold document mutex
+    size_t size_unsafe() const; // Unsafe: caller must hold document mutex
+    const UniValue& operator_string_unsafe(const std::string& key) const; // Unsafe: caller must hold document mutex
+    const UniValue& operator_index_unsafe(size_t index) const; // Unsafe: caller must hold document mutex
     static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr (legacy, kept for compatibility)
 #endif
 
@@ -296,9 +312,9 @@ template <class It>
 void UniValue::push_backV(It first, It last)
 {
     checkType(VARR);
-#ifdef WITH_YYJSON
-    // Always snapshot the input range to avoid iterator invalidation from self-append
-    // This handles cases like arr.push_backV(arr.getValues().begin(), arr.getValues().end())
+
+    // Snapshot the input range before modifying values to avoid iterator invalidation
+    // from self-append cases like arr.push_backV(arr.getValues().begin(), arr.getValues().end())
     std::vector<UniValue> snapshot;
     for (auto it = first; it != last; ++it) {
         snapshot.push_back(*it);
@@ -306,9 +322,6 @@ void UniValue::push_backV(It first, It last)
     for (const auto& v : snapshot) {
         push_back(v);
     }
-#else
-    values.insert(values.end(), first, last);
-#endif
 }
 
 template <typename Int>

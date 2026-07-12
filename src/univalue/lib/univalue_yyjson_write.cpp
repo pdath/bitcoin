@@ -213,7 +213,7 @@ std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent,
  * @param prettyIndent Indentation level for pretty printing (0 for compact)
  * @return JSON string representation
  */
-static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent) {
+std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent) {
     // Unsafe: assumes caller holds the document mutex
     // Use getValStr_unsafe() to avoid re-acquiring the lock
     yyjson_mut_doc* temp_doc = yyjson_mut_doc_new(nullptr);
