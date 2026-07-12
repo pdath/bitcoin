@@ -27,6 +27,14 @@ const UniValue NullUniValue;
  * @note In UniValue's encoding: "1" = true, "" (empty) = false
  */
 bool UniValue::isTrue() const {
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        if (typ != VBOOL) return false;
+        materialize_unsafe();
+        return val == "1";
+    }
+    // No document, direct access is safe
     if (typ != VBOOL) return false;
     materializeIfNeeded();
     return val == "1";
@@ -41,6 +49,14 @@ bool UniValue::isTrue() const {
  * @note In UniValue's encoding: "1" = true, "" (empty) = false
  */
 bool UniValue::isFalse() const {
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        if (typ != VBOOL) return false;
+        materialize_unsafe();
+        return val != "1";
+    }
+    // No document, direct access is safe
     if (typ != VBOOL) return false;
     materializeIfNeeded();
     return val != "1";
@@ -655,8 +671,16 @@ void UniValue::setObject() {
  * @throws std::runtime_error if the type doesn't match
  */
 void UniValue::checkType(const VType& expected) const {
-    if (typ != expected) {
-        throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        if (typ != expected) {
+            throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
+        }
+    } else {
+        if (typ != expected) {
+            throw type_error(std::string("UniValue type is not ") + uvTypeName(expected));
+        }
     }
 }
 /**
@@ -833,20 +857,24 @@ void UniValue::materializeIfNeeded() const {
  * @return true if key was found, false otherwise
  */
 bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
-    if (typ != VOBJ) return false;
-
-    if (m_yyjson_doc && m_yyjson_node) {
-        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
-        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
-        // until the lock_guard unwinds.
-        auto doc_holder = m_yyjson_doc;
-        
-        // Synchronize materialization check and cache access to prevent data races
-        // Use document-level mutex for all UniValues sharing the same document
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
-        if (!m_materialized) {
-            materialize_unsafe();
+        if (typ != VOBJ) return false;
+
+        if (m_yyjson_doc && m_yyjson_node) {
+            if (!m_materialized) {
+                materialize_unsafe();
+            }
+            for (size_t i = 0; i < keys.size(); ++i) {
+                if (keys[i] == key) {
+                    retIdx = i;
+                    return true;
+                }
+            }
+            return false;
         }
+
         for (size_t i = 0; i < keys.size(); ++i) {
             if (keys[i] == key) {
                 retIdx = i;
@@ -855,7 +883,8 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
         }
         return false;
     }
-
+    // No document, check type and search without locking
+    if (typ != VOBJ) return false;
     for (size_t i = 0; i < keys.size(); ++i) {
         if (keys[i] == key) {
             retIdx = i;
