@@ -261,12 +261,6 @@ private:
     void checkType_unsafe(const VType& expected) const; // Unsafe: caller must hold document mutex
     bool findKey(const std::string& key, size_t& retIdx) const;
     bool findKey_unsafe(const std::string& key, size_t& retIdx) const; // Unsafe: caller must hold document mutex
-    bool isTrue_unsafe() const; // Unsafe: caller must hold document mutex
-    bool isFalse_unsafe() const; // Unsafe: caller must hold document mutex
-    bool empty_unsafe() const; // Unsafe: caller must hold document mutex
-    size_t size_unsafe() const; // Unsafe: caller must hold document mutex
-    const UniValue& operator_string_unsafe(const std::string& key) const; // Unsafe: caller must hold document mutex
-    const UniValue& operator_index_unsafe(size_t index) const; // Unsafe: caller must hold document mutex
     const UniValue& find_value_unsafe(std::string_view key) const; // Unsafe: caller must hold document mutex
     bool checkObject_unsafe(const std::map<std::string,UniValue::VType>& memberTypes) const; // Unsafe: caller must hold document mutex
 
