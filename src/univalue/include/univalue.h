@@ -108,6 +108,7 @@ public:
 #else
     enum VType getType() const { return typ.load(); }
     const std::string& getValStr() const;
+    const std::string& getValStr_unsafe() const { return val; } // Unsafe: caller must hold document mutex
     bool empty() const;
     size_t size() const;
 #endif

@@ -219,16 +219,19 @@ static std::string writeYyjsonValueInternal(const UniValue& uv, unsigned int pre
 /**
  * @brief Write a VSTR without yyjson document using a temporary document
  *
+ * Unsafe version: assumes the caller holds the document mutex.
  * For manually constructed string primitives (VSTR without m_yyjson_doc),
  * create a temporary document for serialization using yyjson_mut_write.
  *
- * @param str The string value to serialize
+ * @param uv The UniValue to serialize (must be VSTR without document)
  * @param prettyIndent Indentation level for pretty printing (0 for compact)
  * @return JSON string representation
  */
-static std::string writeYyjsonStrPrimitive(const std::string& str, unsigned int prettyIndent) {
-    // Create a temporary document and node for this primitive string
+static std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyIndent) {
+    // Unsafe: assumes caller holds the document mutex
+    // Use getValStr_unsafe() to avoid re-acquiring the lock
     yyjson_mut_doc* temp_doc = yyjson_mut_doc_new(nullptr);
+    const std::string& str = uv.getValStr_unsafe();
     yyjson_mut_val* temp_node = (yyjson_mut_val*)yyjson_mut_strncpy(temp_doc, str.data(), str.size());
     yyjson_mut_doc_set_root(temp_doc, temp_node);
 
@@ -365,7 +368,7 @@ std::string UniValue::writeYyjson_unsafe(unsigned int prettyIndent, unsigned int
 
     // For VSTR without document, use temporary document
     if (my_typ == VSTR && !m_yyjson_doc && !m_yyjson_node) {
-        return writeYyjsonStrPrimitive(val, prettyIndent);
+        return writeYyjsonStrPrimitive(*this, prettyIndent);
     }
 
     // Fallback for custom indentation levels, non-root levels, or other cases
