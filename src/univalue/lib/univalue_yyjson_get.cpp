@@ -23,8 +23,16 @@
  * @throws std::runtime_error if this is not an object
  */
 const std::vector<std::string>& UniValue::getKeys() const {
-    checkType(VOBJ);
-    materializeIfNeeded();
+    // Acquire document mutex to protect access
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
+        materialize_unsafe();
+    } else {
+        checkType_unsafe(VOBJ);
+        materializeIfNeeded();
+    }
 
     return keys;
 }
@@ -41,9 +49,18 @@ const std::vector<std::string>& UniValue::getKeys() const {
  * @throws std::runtime_error if this is not an object or array
  */
 const std::vector<UniValue>& UniValue::getValues() const {
-    if (typ != VOBJ && typ != VARR)
-        throw std::runtime_error("JSON value is not an object or array as expected");
-    materializeIfNeeded();
+    // Acquire document mutex to protect access
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        if (typ != VOBJ && typ != VARR)
+            throw std::runtime_error("JSON value is not an object or array as expected");
+        materialize_unsafe();
+    } else {
+        if (typ != VOBJ && typ != VARR)
+            throw std::runtime_error("JSON value is not an object or array as expected");
+        materializeIfNeeded();
+    }
     return values;
 }
 
@@ -56,8 +73,15 @@ const std::vector<UniValue>& UniValue::getValues() const {
  * @throws std::runtime_error if this is not a boolean
  */
 bool UniValue::get_bool() const {
-    checkType(VBOOL);
-    materializeIfNeeded();
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VBOOL);
+        materialize_unsafe();
+    } else {
+        checkType_unsafe(VBOOL);
+        materializeIfNeeded();
+    }
     return val == "1";
 }
 
@@ -70,8 +94,15 @@ bool UniValue::get_bool() const {
  * @throws std::runtime_error if this is not a string
  */
 const std::string& UniValue::get_str() const {
-    checkType(VSTR);
-    materializeIfNeeded();
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VSTR);
+        materialize_unsafe();
+    } else {
+        checkType_unsafe(VSTR);
+        materializeIfNeeded();
+    }
     return val;
 }
 
@@ -85,8 +116,15 @@ const std::string& UniValue::get_str() const {
  * @throws std::runtime_error if this is not a number or out of range
  */
 double UniValue::get_real() const {
-    checkType(VNUM);
-    materializeIfNeeded();
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VNUM);
+        materialize_unsafe();
+    } else {
+        checkType_unsafe(VNUM);
+        materializeIfNeeded();
+    }
     double result;
     if (!ParseDouble(val, &result)) {
         throw std::runtime_error("JSON number out of range for double");
@@ -103,8 +141,15 @@ double UniValue::get_real() const {
  * @throws std::runtime_error if this is not an object
  */
 const UniValue& UniValue::get_obj() const {
-    checkType(VOBJ);
-    materializeIfNeeded();
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VOBJ);
+        materialize_unsafe();
+    } else {
+        checkType_unsafe(VOBJ);
+        materializeIfNeeded();
+    }
     return *this;
 }
 
@@ -117,8 +162,15 @@ const UniValue& UniValue::get_obj() const {
  * @throws std::runtime_error if this is not an array
  */
 const UniValue& UniValue::get_array() const {
-    checkType(VARR);
-    materializeIfNeeded();
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        checkType_unsafe(VARR);
+        materialize_unsafe();
+    } else {
+        checkType_unsafe(VARR);
+        materializeIfNeeded();
+    }
     return *this;
 }
 
@@ -130,9 +182,15 @@ const UniValue& UniValue::get_array() const {
  * @param kv Output map to populate
  */
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
-    if (typ != VOBJ) return;
-
-    materializeIfNeeded();
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        if (typ != VOBJ) return;
+        materialize_unsafe();
+    } else {
+        if (typ != VOBJ) return;
+        materializeIfNeeded();
+    }
 
     for (size_t i = 0; i < keys.size(); ++i) {
         kv[keys[i]] = values[i];

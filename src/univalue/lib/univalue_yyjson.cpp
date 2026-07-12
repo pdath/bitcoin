@@ -1532,9 +1532,6 @@ void UniValue::pushKVs(UniValue obj) {
  * @return Reference to the value, or NullUniValue if not found
  */
 const UniValue& UniValue::operator[](const std::string& key) const {
-    if (typ != VOBJ)
-        return NullUniValue;
-
     // Check if we have yyjson tree that needs materialization
     if (m_yyjson_doc && m_yyjson_node) {
         // Hold a local shared_ptr to keep document alive across materialize_unsafe()
@@ -1544,6 +1541,27 @@ const UniValue& UniValue::operator[](const std::string& key) const {
         
         // Use document-level mutex for all UniValues sharing the same document
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        return operator_string_unsafe(key);
+    }
+
+    // No document or no node, use unsafe version without lock
+    return operator_string_unsafe(key);
+}
+
+/**
+ * @brief Array/object index operator for string keys (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Returns the value associated with the given key, or NullUniValue if not found.
+ *
+ * @param key The key to look up
+ * @return Reference to the value, or NullUniValue if not found
+ */
+const UniValue& UniValue::operator_string_unsafe(const std::string& key) const {
+    if (typ != VOBJ)
+        return NullUniValue;
+
+    if (m_yyjson_doc && m_yyjson_node) {
         if (!m_materialized) {
             materialize_unsafe();
         }
@@ -1558,7 +1576,7 @@ const UniValue& UniValue::operator[](const std::string& key) const {
 
     // For already-materialized objects without yyjson tree
     size_t idx;
-    if (findKey(key, idx)) {
+    if (findKey_unsafe(key, idx)) {
         return values[idx];
     }
     return NullUniValue;
@@ -1577,8 +1595,6 @@ const UniValue& UniValue::operator[](const std::string& key) const {
  * @return Reference to the value, or NullUniValue if index is invalid
  */
 const UniValue& UniValue::operator[](size_t index) const {
-    if (typ != VOBJ && typ != VARR)
-        return NullUniValue;
     if (m_yyjson_doc && m_yyjson_node) {
         // Hold a local shared_ptr to keep document alive across materialize_unsafe()
         // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
@@ -1588,6 +1604,27 @@ const UniValue& UniValue::operator[](size_t index) const {
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        return operator_index_unsafe(index);
+    }
+    
+    // No document or no node, use unsafe version without lock
+    return operator_index_unsafe(index);
+}
+
+/**
+ * @brief Array/object index operator for numeric indices (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Returns the value at the specified index, or NullUniValue if index is invalid.
+ *
+ * @param index The index to access
+ * @return Reference to the value, or NullUniValue if index is invalid
+ */
+const UniValue& UniValue::operator_index_unsafe(size_t index) const {
+    if (typ != VOBJ && typ != VARR)
+        return NullUniValue;
+    
+    if (m_yyjson_doc && m_yyjson_node) {
         if (!m_materialized) {
             materialize_unsafe();
         }
@@ -1608,8 +1645,27 @@ const UniValue& UniValue::operator[](size_t index) const {
  * @return Reference to the value, or NullUniValue if not found
  */
 const UniValue& UniValue::find_value(std::string_view key) const {
+    // Acquire document mutex to protect access
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        return find_value_unsafe(key);
+    }
+    // No document, use unsafe version without lock
+    return find_value_unsafe(key);
+}
+
+/**
+ * @brief Find a value by key (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ *
+ * @param key The key to find
+ * @return Reference to the value, or NullUniValue if not found
+ */
+const UniValue& UniValue::find_value_unsafe(std::string_view key) const {
     size_t idx;
-    if (findKey(std::string(key), idx)) {
+    if (findKey_unsafe(std::string(key), idx)) {
         return values[idx];
     }
     return NullUniValue;
@@ -1627,15 +1683,36 @@ const UniValue& UniValue::find_value(std::string_view key) const {
  * @return true if the object matches the expected structure, false otherwise
  */
 bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTypes) const {
+    // Acquire document mutex to protect access
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        return checkObject_unsafe(memberTypes);
+    }
+    // No document, use unsafe version without lock
+    return checkObject_unsafe(memberTypes);
+}
+
+/**
+ * @brief Check if this object has the expected structure (unsafe version)
+ *
+ * Unsafe version: assumes the caller holds the document mutex.
+ * Verifies that the object contains all the keys specified in memberTypes
+ * and that each key has the expected type.
+ *
+ * @param memberTypes Map of key names to expected types
+ * @return true if the object matches the expected structure, false otherwise
+ */
+bool UniValue::checkObject_unsafe(const std::map<std::string,UniValue::VType>& memberTypes) const {
     if (typ != VOBJ) return false;
 
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
-        materialize();
+        materialize_unsafe();
     }
 
     for (const auto& [key, expectedType] : memberTypes) {
         size_t idx;
-        if (!findKey(key, idx)) {
+        if (!findKey_unsafe(key, idx)) {
             return false;
         }
         if (values[idx].typ != expectedType) {
