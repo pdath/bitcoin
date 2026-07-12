@@ -14,6 +14,6 @@ LIBCXX_FLAGS="-fsanitize=thread -nostdinc++ -nostdlib++ -isystem ${LIBCXX_DIR}in
 export PACKAGES="clang-${APT_LLVM_V} llvm-${APT_LLVM_V} llvm-${APT_LLVM_V}-dev libclang-${APT_LLVM_V}-dev libclang-rt-${APT_LLVM_V}-dev python3-zmq ninja-build"
 export DEP_OPTS="CC=clang CXX=clang++ CXXFLAGS='${LIBCXX_FLAGS}' NO_QT=1"
 export GOAL="install"
-export BITCOIN_CONFIG="-DWITH_ZMQ=ON -DSANITIZERS=thread \
+export BITCOIN_CONFIG="-DWITH_ZMQ=ON -DSANITIZERS=thread -DWITH_YYJSON=ON \
 -DAPPEND_CPPFLAGS='-DARENA_DEBUG -DDEBUG_LOCKCONTENTION -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES'"
 export USE_INSTRUMENTED_LIBCPP="Thread"

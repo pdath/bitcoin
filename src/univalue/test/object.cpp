@@ -5,13 +5,16 @@
 
 #include <univalue.h>
 
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #define BOOST_CHECK(expr) assert(expr)
@@ -385,6 +388,62 @@ void univalue_object()
 static const char *json1 =
 "[1.10000000,{\"key1\":\"str\\u0000\",\"key2\":800,\"key3\":{\"name\":\"martian http://test.com\"}}]";
 
+void univalue_thread_safety()
+{
+    UniValue obj(UniValue::VOBJ);
+    std::mutex mutex;
+    obj.pushKV("answer", 42);
+
+    constexpr int rounds = 200;
+    std::atomic<int> errors{0};
+
+    auto reader = [&]() {
+        for (int i = 0; i < rounds; ++i) {
+            try {
+                std::lock_guard<std::mutex> lock(mutex);
+                (void)obj.exists("answer");
+                (void)obj.size();
+                (void)obj["answer"].getValStr();
+            } catch (...) {
+                errors.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            std::this_thread::yield();
+        }
+    };
+
+    auto writer = [&]() {
+        for (int i = 0; i < rounds; ++i) {
+            try {
+                std::lock_guard<std::mutex> lock(mutex);
+                obj.pushKV("counter", i);
+                obj.pushKV("answer", i);
+            } catch (...) {
+                errors.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            std::this_thread::yield();
+        }
+    };
+
+    std::thread t1(reader);
+    std::thread t2(reader);
+    std::thread t3(writer);
+    std::thread t4(writer);
+
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        BOOST_CHECK_EQUAL(errors.load(std::memory_order_relaxed), 0);
+        BOOST_CHECK(obj.exists("answer"));
+        BOOST_CHECK(obj.exists("counter"));
+    }
+}
+
 void univalue_readwrite()
 {
     UniValue v;
@@ -463,6 +522,7 @@ int main(int argc, char* argv[])
     univalue_set();
     univalue_array();
     univalue_object();
+    univalue_thread_safety();
     univalue_readwrite();
     return 0;
 }
