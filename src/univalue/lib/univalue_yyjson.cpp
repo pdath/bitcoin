@@ -153,7 +153,7 @@ UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
                 val = str;  // Store number string in val for fast access
                 break;
             case VBOOL:
-                val = str;  // Store "1" or "0" in val for fast access
+                val = str;  // Store "1" (true) or "" (false); matches setBool()'s encoding
                 break;
             default:
                 // Should not happen for primitives
@@ -792,8 +792,13 @@ void UniValue::materialize() const {
     // If no document, nothing to materialize
     if (!m_yyjson_doc || !m_yyjson_node) return;
     
+    // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+    // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+    // until the lock_guard unwinds.
+    auto doc_holder = m_yyjson_doc;
+    
     // Use document-level mutex for all UniValues sharing the same document
-    std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+    std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
     materialize_unsafe();
 }
 
@@ -829,9 +834,14 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
     if (typ != VOBJ) return false;
 
     if (m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+        // until the lock_guard unwinds.
+        auto doc_holder = m_yyjson_doc;
+        
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
-        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -864,9 +874,14 @@ bool UniValue::findKey(const std::string& key, size_t& retIdx) const {
  */
 const std::string& UniValue::getValStr() const {
     if (m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+        // until the lock_guard unwinds.
+        auto doc_holder = m_yyjson_doc;
+        
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
-        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -884,9 +899,14 @@ const std::string& UniValue::getValStr() const {
  */
 bool UniValue::empty() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+        // until the lock_guard unwinds.
+        auto doc_holder = m_yyjson_doc;
+        
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
-        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -905,9 +925,14 @@ bool UniValue::empty() const {
  */
 size_t UniValue::size() const {
     if ((typ == VOBJ || typ == VARR) && m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+        // until the lock_guard unwinds.
+        auto doc_holder = m_yyjson_doc;
+        
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
-        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -1258,8 +1283,13 @@ const UniValue& UniValue::operator[](const std::string& key) const {
 
     // Check if we have yyjson tree that needs materialization
     if (m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+        // until the lock_guard unwinds.
+        auto doc_holder = m_yyjson_doc;
+        
         // Use document-level mutex for all UniValues sharing the same document
-        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
@@ -1296,9 +1326,14 @@ const UniValue& UniValue::operator[](size_t index) const {
     if (typ != VOBJ && typ != VARR)
         return NullUniValue;
     if (m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        // which may reset m_yyjson_doc for primitive nodes. The mutex must stay valid
+        // until the lock_guard unwinds.
+        auto doc_holder = m_yyjson_doc;
+        
         // Synchronize materialization check and cache access to prevent data races
         // Use document-level mutex for all UniValues sharing the same document
-        std::lock_guard<std::mutex> lock(m_yyjson_doc->m_mutex);
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (!m_materialized.load()) {
             materialize_unsafe();
         }
