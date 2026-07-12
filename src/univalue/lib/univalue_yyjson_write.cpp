@@ -309,16 +309,29 @@ std::string UniValue::writeYyjson(unsigned int prettyIndent, unsigned int indent
 
     // If we have a yyjson node but it's not the root, serialize just that node
     // Only use yyjson's write for indentation levels it supports (0 or 2 spaces)
+    // For pretty output, check if this is an empty container - yyjson's pretty printer
+    // keeps empty containers compact ([]/{}), but UniValue uses indented formatting
     if (m_yyjson_node && !use_fast_path && (prettyIndent == 0 || prettyIndent == 2)) {
-        yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
-        size_t len = 0;
-        char* output = yyjson_mut_val_write_opts(m_yyjson_node, flags, nullptr, &len, nullptr);
-        if (output) {
-            std::string result(output, len);
-            free(output);
-            return postProcessYyjsonOutput(std::move(result));
+        // Check if this node is an empty container (array or object with no children)
+        // If so, fall through to writeYyjsonValueInternal for correct formatting
+        yyjson_type node_type = yyjson_mut_get_type(m_yyjson_node);
+        bool is_empty_container = false;
+        if (prettyIndent > 0 && (node_type == YYJSON_TYPE_ARR || node_type == YYJSON_TYPE_OBJ)) {
+            is_empty_container = (node_type == YYJSON_TYPE_ARR)
+                ? (yyjson_mut_arr_size(m_yyjson_node) == 0)
+                : (yyjson_mut_obj_size(m_yyjson_node) == 0);
         }
-        // Fall through to writeYyjsonValueInternal on failure
+        if (!is_empty_container) {
+            yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
+            size_t len = 0;
+            char* output = yyjson_mut_val_write_opts(m_yyjson_node, flags, nullptr, &len, nullptr);
+            if (output) {
+                std::string result(output, len);
+                free(output);
+                return postProcessYyjsonOutput(std::move(result));
+            }
+        }
+        // Fall through to writeYyjsonValueInternal on failure or for empty containers
     }
 
     // For VSTR without document, use temporary document

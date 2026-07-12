@@ -179,7 +179,7 @@ UniValue::~UniValue() {}
  * @param other The UniValue to copy from
  */
 UniValue::UniValue(const UniValue& other)
-    : typ(other.typ)
+    : typ(other.typ.load())
 {
     // Initialize yyjson state to null (will be set below if needed)
     m_yyjson_doc = nullptr;
@@ -236,7 +236,7 @@ UniValue::UniValue(UniValue&& other) noexcept
     clear();
 
     // Move all state from other
-    typ = other.typ;
+    typ.store(other.typ.load());
     val = std::move(other.val);
     keys = std::move(other.keys);
     values = std::move(other.values);
@@ -245,7 +245,7 @@ UniValue::UniValue(UniValue&& other) noexcept
     m_materialized.store(other.m_materialized.load());
 
     // Reset other to safe state
-    other.typ = VNULL;
+    other.typ.store(VNULL);
     other.m_yyjson_node = nullptr;
     other.m_materialized.store(false);
 }
@@ -268,7 +268,7 @@ UniValue& UniValue::operator=(const UniValue& other) {
         // to handle self-referential assignments like obj = obj["child"].
         // This ensures that clearing this->keys/values doesn't invalidate 'other'
         // when other is a reference into this's data structures.
-        const VType other_typ = other.typ;
+        const VType other_typ = other.typ.load();
         const std::string other_val = other.val;
         std::vector<std::string> other_keys;
         std::vector<UniValue> other_values;
@@ -358,7 +358,7 @@ UniValue& UniValue::operator=(UniValue&& other) noexcept {
         clear();
 
         // Move all state from other
-        typ = other.typ;
+        typ.store(other.typ.load());
         val = std::move(other.val);
         keys = std::move(other.keys);
         values = std::move(other.values);
@@ -367,7 +367,7 @@ UniValue& UniValue::operator=(UniValue&& other) noexcept {
         m_materialized.store(other.m_materialized.load());
 
         // Reset other to safe state
-        other.typ = VNULL;
+        other.typ.store(VNULL);
         other.m_yyjson_node = nullptr;
         other.m_materialized.store(false);
     }
@@ -381,7 +381,7 @@ UniValue& UniValue::operator=(UniValue&& other) noexcept {
  * The UniValue becomes a null value.
  */
 void UniValue::clear() {
-    typ = VNULL;
+    typ.store(VNULL);
     val.clear();
     keys.clear();
     values.clear();
@@ -400,7 +400,6 @@ void UniValue::setNull() {
     clear();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
-    typ = VNULL;
     val.clear();
     m_materialized.store(true);  // Primitives are always materialized
 }
@@ -417,7 +416,7 @@ void UniValue::setBool(bool val_) {
     clear();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
-    typ = VBOOL;
+    typ.store(VBOOL);
     if (val_) {
         val = "1";
     } else {
@@ -474,6 +473,9 @@ static bool validNumStr(const std::string& s) {
         firstDigit++;
         raw++; // Also advance raw past the sign
     }
+
+    if (firstDigit == end)
+        return false;
 
     if (!json_isdigit(static_cast<unsigned char>(*firstDigit)))
         return false;
@@ -534,7 +536,7 @@ void UniValue::setNumStr(std::string str) {
     m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
     m_yyjson_node = yyjson_mut_rawncpy(m_yyjson_doc->m_doc, str.data(), str.size());
     setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
-    typ = VNUM;
+    typ.store(VNUM);
     val = str;  // Store number string for fast access
     m_materialized.store(true);  // Primitives are always materialized
 }
@@ -554,7 +556,7 @@ void UniValue::setInt(uint64_t val_) {
     clear();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
-    typ = VNUM;
+    typ.store(VNUM);
     val = str;  // Store number string for fast access
     m_materialized.store(true);  // Primitives are always materialized
 }
@@ -574,7 +576,7 @@ void UniValue::setInt(int64_t val_) {
     clear();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
-    typ = VNUM;
+    typ.store(VNUM);
     val = str;  // Store number string for fast access
     m_materialized.store(true);  // Primitives are always materialized
 }
@@ -594,7 +596,7 @@ void UniValue::setFloat(double val_) {
     std::string str = ss.str();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
-    typ = VNUM;
+    typ.store(VNUM);
     val = str;  // Store number string for fast access
     m_materialized.store(true);  // Primitives are always materialized
 }
@@ -611,7 +613,7 @@ void UniValue::setStr(std::string str) {
     clear();
     m_yyjson_doc = nullptr;
     m_yyjson_node = nullptr;
-    typ = VSTR;
+    typ.store(VSTR);
     val = str;  // Store string for fast access
     m_materialized.store(true);  // Primitives are always materialized
 }
@@ -626,7 +628,7 @@ void UniValue::setArray() {
     m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
     m_yyjson_node = yyjson_mut_arr(m_yyjson_doc->m_doc);
     setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
-    typ = VARR;
+    typ.store(VARR);
     // Don't populate val/keys/values for containers - use lazy materialization
     m_materialized.store(false);
 }
@@ -641,7 +643,7 @@ void UniValue::setObject() {
     m_yyjson_doc = std::make_shared<YyjsonDocWithMutex>(yyjson_mut_doc_new(nullptr));
     m_yyjson_node = yyjson_mut_obj(m_yyjson_doc->m_doc);
     setYyjsonRoot(m_yyjson_doc->m_doc, m_yyjson_node);
-    typ = VOBJ;
+    typ.store(VOBJ);
     // Don't populate val/keys/values for containers - use lazy materialization
     m_materialized.store(false);
 }
@@ -674,12 +676,12 @@ void UniValue::materialize_unsafe() const {
     yyjson_type ytype = yyjson_mut_get_type(m_yyjson_node);
     switch (ytype) {
         case YYJSON_TYPE_NULL:
-            typ = VNULL;
+            typ.store(VNULL);
             m_yyjson_doc.reset();
             m_yyjson_node = nullptr;
             break;
         case YYJSON_TYPE_BOOL:
-            typ = VBOOL;
+            typ.store(VBOOL);
             if (yyjson_mut_get_bool(m_yyjson_node)) {
                 val = "1";
             } else {
@@ -692,7 +694,7 @@ void UniValue::materialize_unsafe() const {
         case YYJSON_TYPE_NUM: {
             const char* raw = yyjson_mut_get_raw(m_yyjson_node);
             size_t len = yyjson_mut_get_len(m_yyjson_node);
-            typ = VNUM;
+            typ.store(VNUM);
             if (raw && len > 0) {
                 val.assign(raw, len);
             } else {
@@ -705,7 +707,7 @@ void UniValue::materialize_unsafe() const {
         case YYJSON_TYPE_STR: {
             const char* str = yyjson_mut_get_str(m_yyjson_node);
             size_t len = yyjson_mut_get_len(m_yyjson_node);
-            typ = VSTR;
+            typ.store(VSTR);
             if (str && len > 0) {
                 val.assign(str, len);
             } else {
@@ -716,7 +718,7 @@ void UniValue::materialize_unsafe() const {
             break;
         }
         case YYJSON_TYPE_ARR: {
-            typ = VARR;
+            typ.store(VARR);
             values.clear();
             size_t arr_size = yyjson_mut_arr_size(m_yyjson_node);
             values.reserve(arr_size);
@@ -735,7 +737,7 @@ void UniValue::materialize_unsafe() const {
             break;
         }
         case YYJSON_TYPE_OBJ: {
-            typ = VOBJ;
+            typ.store(VOBJ);
             keys.clear();
             values.clear();
             size_t obj_size = yyjson_mut_obj_size(m_yyjson_node);
@@ -969,6 +971,7 @@ void UniValue::reserve(size_t new_cap) {
  * documents for primitives when building arrays.
  *
  * @param val The value to append
+ * @note Thread-safe: Uses document-level mutex to protect yyjson tree modifications
  */
 void UniValue::push_back(UniValue val) {
     checkType(VARR);
@@ -977,6 +980,10 @@ void UniValue::push_back(UniValue val) {
 
     // Add to yyjson array (primary storage) or to materialized representation
     if (m_yyjson_doc && m_yyjson_node && yyjson_mut_get_type(m_yyjson_node) == YYJSON_TYPE_ARR) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        auto doc_holder = m_yyjson_doc;
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        
         // Check if we need to use legacy path (val is a container without yyjson tree)
         if (val.typ == VOBJ || val.typ == VARR) {
             if (!val.m_yyjson_doc || !val.m_yyjson_node) {
@@ -1027,21 +1034,25 @@ void UniValue::push_back(UniValue val) {
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
-            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
-            if (m_yyjson_doc && m_yyjson_node) {
-                materialize();
-            }
+            // Materialize under existing lock using materialize_unsafe()
+            materialize_unsafe();
         }
     }
-    // Fallback to legacy representation
-    // This is used when:
-    // 1. The target array doesn't have yyjson tree
-    // 2. The value is a container without yyjson tree (after materializing if needed)
-    values.push_back(std::move(val));
-    // Clear yyjson state to ensure writeYyjson() uses legacy representation
-    m_yyjson_doc.reset();
-    m_yyjson_node = nullptr;
-    m_materialized.store(true);  // Legacy representation is now up to date
+    // Fallback to legacy representation - need to lock if we have a document
+    if (m_yyjson_doc && m_yyjson_node) {
+        auto doc_holder = m_yyjson_doc;
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        materialize_unsafe();
+        values.push_back(std::move(val));
+        // Clear yyjson state to ensure writeYyjson() uses legacy representation
+        m_yyjson_doc.reset();
+        m_yyjson_node = nullptr;
+        m_materialized.store(true);  // Legacy representation is now up to date
+    } else {
+        // No document, use legacy path directly
+        values.push_back(std::move(val));
+        m_materialized.store(true);
+    }
 }
 
 /**
@@ -1055,14 +1066,18 @@ void UniValue::push_back(UniValue val) {
  *
  * @param key The key to add/update
  * @param val The value to associate with the key
+ * @note Thread-safe: Uses document-level mutex to protect yyjson tree modifications
  */
 void UniValue::pushKV(std::string key, UniValue val) {
     checkType(VOBJ);
 
-    size_t idx;
     bool use_legacy_path = false;
 
     if (m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        auto doc_holder = m_yyjson_doc;
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        
         // Always update the yyjson tree (primary storage)
         // Create key first, then value - if either fails, we throw
         yyjson_mut_val* new_key = (yyjson_mut_val*)yyjson_mut_strncpy(m_yyjson_doc->m_doc, key.data(), key.size());
@@ -1081,11 +1096,30 @@ void UniValue::pushKV(std::string key, UniValue val) {
 
         if (use_legacy_path) {
             // Can't add container without yyjson tree to yyjson object
-            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
-            if (m_yyjson_doc && m_yyjson_node) {
-                materialize();
+            // Materialize under existing lock using materialize_unsafe()
+            materialize_unsafe();
+            // Search the materialized cache directly under the existing lock
+            // (don't call findKey() as it would try to relock the mutex)
+            if (m_materialized.load()) {
+                for (size_t i = 0; i < keys.size(); ++i) {
+                    if (keys[i] == key) {
+                        values[i] = std::move(val);
+                        // Clear yyjson state to ensure writeYyjson() uses legacy representation
+                        m_yyjson_doc.reset();
+                        m_yyjson_node = nullptr;
+                        m_materialized.store(true);
+                        return;
+                    }
+                }
             }
-            // Fall through to legacy representation
+            // Key not found, add new entry
+            keys.push_back(std::move(key));
+            values.push_back(std::move(val));
+            // Clear yyjson state to ensure writeYyjson() uses legacy representation
+            m_yyjson_doc.reset();
+            m_yyjson_node = nullptr;
+            m_materialized.store(true);
+            return;
         } else {
             // Optimization: Handle values with yyjson tree (both materialized and non-materialized)
             yyjson_mut_val* new_val = nullptr;
@@ -1134,20 +1168,49 @@ void UniValue::pushKV(std::string key, UniValue val) {
             return;
         }
     }
-    // Fallback to legacy representation
-    // This is used when:
-    // 1. The target object doesn't have yyjson tree
-    // 2. The value is a container without yyjson tree (after materializing if needed)
-    if (m_materialized.load() && findKey(key, idx)) {
-        values[idx] = std::move(val);
-    } else {
+    // Fallback to legacy representation - need to lock if we have a document
+    if (m_yyjson_doc && m_yyjson_node) {
+        auto doc_holder = m_yyjson_doc;
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        materialize_unsafe();
+        // Search the materialized cache directly under the existing lock
+        // (don't call findKey() as it would try to relock the mutex)
+        if (m_materialized.load()) {
+            for (size_t i = 0; i < keys.size(); ++i) {
+                if (keys[i] == key) {
+                    values[i] = std::move(val);
+                    // Clear yyjson state to ensure writeYyjson() uses legacy representation
+                    m_yyjson_doc.reset();
+                    m_yyjson_node = nullptr;
+                    m_materialized.store(true);  // Legacy representation is now up to date
+                    return;
+                }
+            }
+        }
+        // Key not found, add new entry
         keys.push_back(std::move(key));
         values.push_back(std::move(val));
+        // Clear yyjson state to ensure writeYyjson() uses legacy representation
+        m_yyjson_doc.reset();
+        m_yyjson_node = nullptr;
+        m_materialized.store(true);  // Legacy representation is now up to date
+    } else {
+        // No document, use legacy path directly
+        // Note: This path doesn't need locking as there's no document
+        // But we still need to handle the case where we're modifying a materialized object
+        if (typ == VOBJ) {
+            for (size_t i = 0; i < keys.size(); ++i) {
+                if (keys[i] == key) {
+                    values[i] = std::move(val);
+                    m_materialized.store(true);
+                    return;
+                }
+            }
+        }
+        keys.push_back(std::move(key));
+        values.push_back(std::move(val));
+        m_materialized.store(true);
     }
-    // Clear yyjson state to ensure writeYyjson() uses legacy representation
-    m_yyjson_doc.reset();
-    m_yyjson_node = nullptr;
-    m_materialized.store(true);  // Legacy representation is now up to date
 }
 
 /**
@@ -1157,6 +1220,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
  *
  * @param key The key to add/update
  * @param val The value to associate with the key
+ * @note Thread-safe: Uses document-level mutex to protect yyjson tree modifications
  */
 void UniValue::pushKVEnd(std::string key, UniValue val) {
     checkType(VOBJ);
@@ -1164,6 +1228,10 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
     bool use_legacy_path = false;
 
     if (m_yyjson_doc && m_yyjson_node) {
+        // Hold a local shared_ptr to keep document alive across materialize_unsafe()
+        auto doc_holder = m_yyjson_doc;
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        
         // Check if we need to use legacy path (val is a container without yyjson tree)
         if (val.typ == VOBJ || val.typ == VARR) {
             if (!val.m_yyjson_doc || !val.m_yyjson_node) {
@@ -1227,22 +1295,36 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
-            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
-            if (m_yyjson_doc && m_yyjson_node) {
-                materialize();
-            }
+            // Materialize under existing lock using materialize_unsafe()
+            materialize_unsafe();
+            // Add to legacy representation directly under the existing lock
+            keys.push_back(std::move(key));
+            values.push_back(std::move(val));
+            // Clear yyjson state to ensure writeYyjson() uses legacy representation
+            m_yyjson_doc.reset();
+            m_yyjson_node = nullptr;
+            m_materialized.store(true);
+            return;
         }
     }
-    // Fallback to legacy representation
-    // This is used when:
-    // 1. The target object doesn't have yyjson tree
-    // 2. The value is a container without yyjson tree (after materializing if needed)
-    keys.push_back(std::move(key));
-    values.push_back(std::move(val));
-    // Clear yyjson state to ensure writeYyjson() uses legacy representation
-    m_yyjson_doc.reset();
-    m_yyjson_node = nullptr;
-    m_materialized.store(true);  // Legacy representation is now up to date
+    // Fallback to legacy representation - need to lock if we have a document
+    if (m_yyjson_doc && m_yyjson_node) {
+        auto doc_holder = m_yyjson_doc;
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        materialize_unsafe();
+        // Add to legacy representation directly under the existing lock
+        keys.push_back(std::move(key));
+        values.push_back(std::move(val));
+        // Clear yyjson state to ensure writeYyjson() uses legacy representation
+        m_yyjson_doc.reset();
+        m_yyjson_node = nullptr;
+        m_materialized.store(true);  // Legacy representation is now up to date
+    } else {
+        // No document, use legacy path directly
+        keys.push_back(std::move(key));
+        values.push_back(std::move(val));
+        m_materialized.store(true);
+    }
 }
 
 /**

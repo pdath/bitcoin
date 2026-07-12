@@ -39,7 +39,8 @@
  *   rematerialization when state changes. This avoids the per-node mutex overhead for large JSON documents.
  * - Copying containers preserves the yyjson tree via yyjson_mut_val_mut_copy(), avoiding
  *   the performance regression that occurred when copies unconditionally discarded trees.
- * - Modifying non-const UniValue objects requires external synchronization.
+ * - Modifying non-const UniValue objects (push_back, pushKV, pushKVEnd) is thread-safe: uses the
+ *   same document-level mutex to protect yyjson tree modifications.
  *
  * @par Performance Considerations (WITH_YYJSON)
  * - Containers (arrays/objects) use yyjson as primary storage for efficient building
@@ -106,7 +107,7 @@ public:
     bool empty() const { return (values.size() == 0); }
     size_t size() const { return values.size(); }
 #else
-    enum VType getType() const { return typ; }
+    enum VType getType() const { return typ.load(); }
     const std::string& getValStr() const;
     bool empty() const;
     size_t size() const;
@@ -130,14 +131,14 @@ public:
     bool isArray() const { return (typ == VARR); }
     bool isObject() const { return (typ == VOBJ); }
 #else
-    bool isNull() const { return (typ == VNULL); }
+    bool isNull() const { return (typ.load() == VNULL); }
     bool isTrue() const;
     bool isFalse() const;
-    bool isBool() const { return (typ == VBOOL); }
-    bool isStr() const { return (typ == VSTR); }
-    bool isNum() const { return (typ == VNUM); }
-    bool isArray() const { return (typ == VARR); }
-    bool isObject() const { return (typ == VOBJ); }
+    bool isBool() const { return (typ.load() == VBOOL); }
+    bool isStr() const { return (typ.load() == VSTR); }
+    bool isNum() const { return (typ.load() == VNUM); }
+    bool isArray() const { return (typ.load() == VARR); }
+    bool isObject() const { return (typ.load() == VOBJ); }
 #endif
 
     void push_back(UniValue val);
@@ -172,9 +173,10 @@ public:
 private:
     // Common members - mutable only when WITH_YYJSON for lazy materialization
 #ifdef WITH_YYJSON
-    mutable
-#endif
+    mutable std::atomic<UniValue::VType> typ;
+#else
     UniValue::VType typ;
+#endif
 #ifdef WITH_YYJSON
     mutable
 #endif
