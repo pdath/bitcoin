@@ -141,8 +141,10 @@ std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent,
             if (pretty) s += "\n";
             for (size_t i = 0; i < values.size(); ++i) {
                 if (pretty) s += indentStr;
-                // For child values, use their safe writeYyjson() which will acquire their own document locks
-                s += values[i].writeYyjson(prettyIndent, indentLevel + 1);
+                // For child values, use their unsafe writeYyjson_unsafe() since we already hold the parent's document lock
+                // If child shares the same document, we're safe; if child has its own document, writeYyjson_unsafe
+                // will not lock it (which is fine as it's const and we're not modifying)
+                s += values[i].writeYyjson_unsafe(prettyIndent, indentLevel + 1);
                 if (i < values.size() - 1) {
                     s += ",";
                 }
@@ -177,8 +179,10 @@ std::string UniValue::writeYyjsonValueInternal_unsafe(unsigned int prettyIndent,
                 if (pretty) s += indentStr;
                 s += '"' + json_escape(keys[i]) + std::string("\":");
                 if (pretty) s += " ";
-                // For child values, use their safe writeYyjson() which will acquire their own document locks
-                s += values[i].writeYyjson(prettyIndent, indentLevel + 1);
+                // For child values, use their unsafe writeYyjson_unsafe() since we already hold the parent's document lock
+                // If child shares the same document, we're safe; if child has its own document, writeYyjson_unsafe
+                // will not lock it (which is fine as it's const and we're not modifying)
+                s += values[i].writeYyjson_unsafe(prettyIndent, indentLevel + 1);
                 if (i < keys.size() - 1) {
                     s += ",";
                 }
