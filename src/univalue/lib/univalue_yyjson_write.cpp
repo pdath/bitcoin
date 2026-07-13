@@ -222,17 +222,25 @@ std::string writeYyjsonStrPrimitive(const UniValue& uv, unsigned int prettyInden
     // Use getValStr_unsafe() to avoid re-acquiring the lock
     yyjson_mut_doc* temp_doc = yyjson_mut_doc_new(nullptr);
     const std::string& str = uv.getValStr_unsafe();
+    if (!temp_doc) {
+        return '"' + json_escape(str) + '"';
+    }
     yyjson_mut_val* temp_node = (yyjson_mut_val*)yyjson_mut_strncpy(temp_doc, str.data(), str.size());
+    if (!temp_node) {
+        yyjson_mut_doc_free(temp_doc);
+        return '"' + json_escape(str) + '"';
+    }
     yyjson_mut_doc_set_root(temp_doc, temp_node);
 
     yyjson_write_flag flags = prettyIndent ? YYJSON_WRITE_PRETTY_TWO_SPACES : YYJSON_WRITE_NOFLAG;
     size_t len = 0;
     char* output = yyjson_mut_write_opts(temp_doc, flags, nullptr, &len, nullptr);
-    std::string result;
-    if (output) {
-        result = std::string(output, len);
-        free(output);
+    if (!output) {
+        yyjson_mut_doc_free(temp_doc);
+        return '"' + json_escape(str) + '"';
     }
+    std::string result(output, len);
+    free(output);
     yyjson_mut_doc_free(temp_doc);
 
     // Use the shared post-processing function to handle DEL and \uXXXX

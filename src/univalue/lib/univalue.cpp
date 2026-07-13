@@ -147,7 +147,7 @@ void UniValue::pushKVs(UniValue obj)
     obj.checkType(VOBJ);
 
     for (size_t i = 0; i < obj.keys.size(); i++)
-        pushKVEnd(std::move(obj.keys[i]), std::move(obj.values[i]));
+        pushKVEnd(std::move(obj.keys.at(i)), std::move(obj.values.at(i)));
 }
 
 void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const

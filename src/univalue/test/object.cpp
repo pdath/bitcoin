@@ -391,7 +391,6 @@ static const char *json1 =
 void univalue_thread_safety()
 {
     UniValue obj(UniValue::VOBJ);
-    std::mutex mutex;
     obj.pushKV("answer", 42);
 
     constexpr int rounds = 200;
@@ -400,7 +399,6 @@ void univalue_thread_safety()
     auto reader = [&]() {
         for (int i = 0; i < rounds; ++i) {
             try {
-                std::lock_guard<std::mutex> lock(mutex);
                 (void)obj.exists("answer");
                 (void)obj.size();
                 (void)obj["answer"].getValStr();
@@ -415,7 +413,6 @@ void univalue_thread_safety()
     auto writer = [&]() {
         for (int i = 0; i < rounds; ++i) {
             try {
-                std::lock_guard<std::mutex> lock(mutex);
                 obj.pushKV("counter", i);
                 obj.pushKV("answer", i);
             } catch (...) {
@@ -436,12 +433,9 @@ void univalue_thread_safety()
     t3.join();
     t4.join();
 
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        BOOST_CHECK_EQUAL(errors.load(std::memory_order_relaxed), 0);
-        BOOST_CHECK(obj.exists("answer"));
-        BOOST_CHECK(obj.exists("counter"));
-    }
+    BOOST_CHECK_EQUAL(errors.load(std::memory_order_relaxed), 0);
+    BOOST_CHECK(obj.exists("answer"));
+    BOOST_CHECK(obj.exists("counter"));
 }
 
 void univalue_readwrite()
