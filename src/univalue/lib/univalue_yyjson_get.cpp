@@ -187,12 +187,16 @@ void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
         std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
         if (typ != VOBJ) return;
         materialize_unsafe();
+
+        // Snapshot under lock
+        for (size_t i = 0; i < keys.size(); ++i) {
+            kv[keys[i]] = values[i];
+        }
     } else {
         if (typ != VOBJ) return;
         materializeIfNeeded();
-    }
-
-    for (size_t i = 0; i < keys.size(); ++i) {
-        kv[keys[i]] = values[i];
+        for (size_t i = 0; i < keys.size(); ++i) {
+            kv[keys[i]] = values[i];
+        }
     }
 }
