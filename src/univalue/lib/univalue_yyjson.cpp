@@ -318,13 +318,25 @@ UniValue& UniValue::operator=(UniValue&& other) noexcept {
  * The UniValue becomes a null value.
  */
 void UniValue::clear() {
-    typ = VNULL;
-    val.clear();
-    keys.clear();
-    values.clear();
-    m_yyjson_doc.reset();
-    m_yyjson_node = nullptr;
-    m_materialized = false;
+    auto doc_holder = m_yyjson_doc;
+    if (doc_holder) {
+        std::lock_guard<std::mutex> lock(doc_holder->m_mutex);
+        typ = VNULL;
+        val.clear();
+        keys.clear();
+        values.clear();
+        m_yyjson_doc.reset();
+        m_yyjson_node = nullptr;
+        m_materialized = false;
+    } else {
+        typ = VNULL;
+        val.clear();
+        keys.clear();
+        values.clear();
+        m_yyjson_doc.reset();
+        m_yyjson_node = nullptr;
+        m_materialized = false;
+    }
 }
 
 void UniValue::transferFrom_unsafe(UniValue&& other) noexcept {
