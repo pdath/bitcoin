@@ -897,19 +897,26 @@ size_t UniValue::size() const {
 }
 
 /**
- * @brief Reserve capacity for an array
+ * @brief Reserve capacity for an array or object
  *
  * With eager materialization, containers are materialized immediately on construction.
  * Reserves the requested capacity in the values vector.
+ * For objects, also reserves capacity in the keys vector.
+ * Note: yyjson's reservation is array-only; objects must be materialized first.
  *
  * @param new_cap The new capacity to reserve
  */
 void UniValue::reserve(size_t new_cap) {
-    checkType(VARR);
+    if (typ != VARR && typ != VOBJ) {
+        checkType(VARR);
+    }
     if (m_yyjson_doc && m_yyjson_node && !m_materialized) {
         materialize();
     }
     values.reserve(new_cap);
+    if (typ == VOBJ) {
+        keys.reserve(new_cap);
+    }
 }
 
 /**
