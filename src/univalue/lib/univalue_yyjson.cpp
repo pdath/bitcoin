@@ -977,12 +977,16 @@ void UniValue::push_back(UniValue val) {
                 throw std::runtime_error("yyjson_mut_arr_append failed");
             }
             // Eager materialization: update legacy representation immediately
+            // Set m_materialized to false so materialize() rebuilds values from updated yyjson tree
+            m_materialized = false;
             materialize();
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
             // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
             if (m_yyjson_doc && m_yyjson_node) {
+                // Set m_materialized to false so materialize() rebuilds values from updated yyjson tree
+                m_materialized = false;
                 materialize();
             }
         }
@@ -1037,6 +1041,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
             // Can't add container without yyjson tree to yyjson object
             // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
             if (m_yyjson_doc && m_yyjson_node) {
+                // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
+                m_materialized = false;
                 materialize();
             }
             // Fall through to legacy representation
@@ -1083,6 +1089,8 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 throw std::runtime_error("yyjson_mut_obj_put failed");
             }
             // Eager materialization: update legacy representation immediately
+            // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
+            m_materialized = false;
             materialize();
             return;
         }
@@ -1176,12 +1184,16 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
                 throw std::runtime_error("yyjson_mut_obj_add failed");
             }
             // Eager materialization: update legacy representation immediately
+            // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
+            m_materialized = false;
             materialize();
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
             // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
             if (m_yyjson_doc && m_yyjson_node) {
+                // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
+                m_materialized = false;
                 materialize();
             }
         }
