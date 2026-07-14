@@ -587,7 +587,7 @@ void UniValue::setInt(int64_t val_) {
 /**
  * @brief Set this UniValue to a floating-point number
  *
- * Converts the double to a string with 15 digits of precision.
+ * Converts the double to a string with 16 digits of precision.
  * Optimization: Primitives don't need their own yyjson documents.
  *
  * @param val_ The floating-point value
@@ -976,19 +976,19 @@ void UniValue::push_back(UniValue val) {
             if (!yyjson_mut_arr_append((yyjson_mut_val*)m_yyjson_node, new_val)) {
                 throw std::runtime_error("yyjson_mut_arr_append failed");
             }
-            // Eager materialization: update legacy representation immediately
-            // Set m_materialized to false so materialize() rebuilds values from updated yyjson tree
-            m_materialized = false;
-            materialize();
+            // Incrementally materialize only the newly appended node instead of
+            // rebuilding the whole values vector
+            UniValue child;
+            child.clear();
+            child.m_yyjson_doc = m_yyjson_doc;
+            child.m_yyjson_node = new_val;
+            child.materialize();
+            values.push_back(std::move(child));
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
-            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
-            if (m_yyjson_doc && m_yyjson_node) {
-                // Set m_materialized to false so materialize() rebuilds values from updated yyjson tree
-                m_materialized = false;
-                materialize();
-            }
+            // With incremental materialization, the tree and values should already be in sync
+            // No need to materialize here
         }
     }
     // Fallback to legacy representation
@@ -1039,12 +1039,7 @@ void UniValue::pushKV(std::string key, UniValue val) {
 
         if (use_legacy_path) {
             // Can't add container without yyjson tree to yyjson object
-            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
-            if (m_yyjson_doc && m_yyjson_node) {
-                // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
-                m_materialized = false;
-                materialize();
-            }
+            // With incremental materialization, the tree and keys/values should already be in sync
             // Fall through to legacy representation
         } else {
             // Optimization: Handle values with yyjson tree (both materialized and non-materialized)
@@ -1088,10 +1083,32 @@ void UniValue::pushKV(std::string key, UniValue val) {
             if (!yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val)) {
                 throw std::runtime_error("yyjson_mut_obj_put failed");
             }
-            // Eager materialization: update legacy representation immediately
-            // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
-            m_materialized = false;
-            materialize();
+            // Incrementally materialize only the newly added key-value pair instead of
+            // rebuilding the whole keys/values vectors
+            UniValue child_val;
+            child_val.clear();
+            child_val.m_yyjson_doc = m_yyjson_doc;
+            child_val.m_yyjson_node = new_val;
+            child_val.materialize();
+            
+            const char* kstr = yyjson_mut_get_str(new_key);
+            size_t klen = yyjson_mut_get_len(new_key);
+            std::string key_str;
+            if (kstr && klen > 0) {
+                key_str.assign(kstr, klen);
+            }
+            
+            // For pushKV, we need to handle existing key replacement
+            // yyjson_mut_obj_put replaces the value if key exists
+            // We need to update the existing entry or add a new one
+            size_t idx;
+            if (m_materialized && findKey(key_str, idx)) {
+                keys[idx] = std::move(key_str);
+                values[idx] = std::move(child_val);
+            } else {
+                keys.push_back(std::move(key_str));
+                values.push_back(std::move(child_val));
+            }
             return;
         }
     }
@@ -1183,19 +1200,29 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             if (!yyjson_mut_obj_add((yyjson_mut_val*)m_yyjson_node, new_key, new_val)) {
                 throw std::runtime_error("yyjson_mut_obj_add failed");
             }
-            // Eager materialization: update legacy representation immediately
-            // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
-            m_materialized = false;
-            materialize();
+            // Incrementally materialize only the newly added key-value pair instead of
+            // rebuilding the whole keys/values vectors
+            // Note: pushKVEnd assumes unique keys (no replacement)
+            const char* kstr = yyjson_mut_get_str(new_key);
+            size_t klen = yyjson_mut_get_len(new_key);
+            std::string key_str;
+            if (kstr && klen > 0) {
+                key_str.assign(kstr, klen);
+            }
+            
+            UniValue child_val;
+            child_val.clear();
+            child_val.m_yyjson_doc = m_yyjson_doc;
+            child_val.m_yyjson_node = new_val;
+            child_val.materialize();
+            
+            keys.push_back(std::move(key_str));
+            values.push_back(std::move(child_val));
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
-            // Need to materialize first to ensure yyjson tree and legacy representation stay in sync
-            if (m_yyjson_doc && m_yyjson_node) {
-                // Set m_materialized to false so materialize() rebuilds keys/values from updated yyjson tree
-                m_materialized = false;
-                materialize();
-            }
+            // With incremental materialization, the tree and keys/values should already be in sync
+            // No need to materialize here
         }
     }
     // Fallback to legacy representation
