@@ -166,7 +166,7 @@ public:
 #endif
 
 private:
-    // Common members - mutable only when WITH_YYJSON for lazy materialization
+    // Common members - mutable only when WITH_YYJSON for eager materialization
 #ifdef WITH_YYJSON
     mutable
 #endif
@@ -188,12 +188,11 @@ private:
     // yyjson primary storage
     mutable std::shared_ptr<yyjson_mut_doc> m_yyjson_doc; //!< Shared pointer to yyjson mutable document (primary storage)
     mutable yyjson_mut_val* m_yyjson_node{nullptr};    //!< Pointer to the root node in the yyjson tree
-    mutable bool m_materialized{false};  //!< Whether lazy caches (val/keys/values) have been populated
+    mutable bool m_materialized{false};  //!< Whether legacy caches (val/keys/values) have been populated
     
     // Eager materialization: containers are materialized immediately
     // when constructed or modified, so no mutex needed
 
-    void materialize_unsafe() const;       // Populate caches from yyjson (internal, no locking)
     void materialize() const;              // Populate caches from yyjson (eager for containers)
     void materializeIfNeeded() const;      // Guard to ensure materialization
     static void yyjson_doc_deleter(yyjson_mut_doc* doc); //!< Custom deleter for yyjson document shared_ptr

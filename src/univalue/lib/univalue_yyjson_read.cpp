@@ -300,7 +300,7 @@ bool UniValue::read(std::string_view str_in) {
 
     // Eager materialization: materialize containers immediately
     if (typ == VARR || typ == VOBJ) {
-        materialize_unsafe();
+        materialize();
         m_materialized = true;
     } else {
         m_materialized = true;
