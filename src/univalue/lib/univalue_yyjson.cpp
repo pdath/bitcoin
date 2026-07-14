@@ -985,11 +985,12 @@ void UniValue::push_back(UniValue val) {
             }
             // Incrementally materialize only the newly appended node instead of
             // rebuilding the whole values vector
-            // For primitives: we already know the type and value, so construct directly
+            // For primitives: we already have the value, just move it directly
             // For containers: need to materialize from the yyjson tree
             if (val.typ != VOBJ && val.typ != VARR) {
-                // Primitive: directly construct UniValue from known value
-                values.push_back(UniValue(val.typ, val.val));
+                // Primitive: move the value directly - we already created the yyjson node above
+                // and val contains the primitive data we need
+                values.push_back(std::move(val));
             } else {
                 // Container: materialize from yyjson tree
                 UniValue child;
@@ -1100,21 +1101,9 @@ void UniValue::pushKV(std::string key, UniValue val) {
             }
             // Incrementally materialize only the newly added key-value pair instead of
             // rebuilding the whole keys/values vectors
-            // For primitives: we already know the type and value, so construct directly
+            // For primitives: we already have the value, just move it directly
             // For containers: need to materialize from the yyjson tree
-            UniValue child_val;
-            if (val.typ != VOBJ && val.typ != VARR) {
-                // Primitive: directly construct UniValue from known value
-                child_val = UniValue(val.typ, val.val);
-            } else {
-                // Container: materialize from yyjson tree
-                child_val.clear();
-                child_val.m_yyjson_doc = m_yyjson_doc;
-                child_val.m_yyjson_node = new_val;
-                child_val.materialize();
-            }
-            
-            // Extract key string from new_key
+            // Extract key string from new_key first (needed in both branches)
             const char* kstr = yyjson_mut_get_str(new_key);
             size_t klen = yyjson_mut_get_len(new_key);
             std::string key_str;
@@ -1122,16 +1111,36 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 key_str.assign(kstr, klen);
             }
             
-            // For pushKV, we need to handle existing key replacement
-            // yyjson_mut_obj_put replaces the value if key exists
-            // We need to update the existing entry or add a new one
-            size_t idx;
-            if (m_materialized && findKey(key_str, idx)) {
-                keys[idx] = std::move(key_str);
-                values[idx] = std::move(child_val);
+            if (val.typ != VOBJ && val.typ != VARR) {
+                // Primitive: move the value directly
+                // For pushKV, we need to handle existing key replacement
+                // yyjson_mut_obj_put replaces the value if key exists
+                // We need to update the existing entry or add a new one
+                size_t idx;
+                if (m_materialized && findKey(key_str, idx)) {
+                    keys[idx] = std::move(key_str);
+                    values[idx] = std::move(val);
+                } else {
+                    keys.push_back(std::move(key_str));
+                    values.push_back(std::move(val));
+                }
             } else {
-                keys.push_back(std::move(key_str));
-                values.push_back(std::move(child_val));
+                // Container: materialize from yyjson tree
+                UniValue child_val;
+                child_val.clear();
+                child_val.m_yyjson_doc = m_yyjson_doc;
+                child_val.m_yyjson_node = new_val;
+                child_val.materialize();
+                
+                // Handle existing key replacement
+                size_t idx;
+                if (m_materialized && findKey(key_str, idx)) {
+                    keys[idx] = std::move(key_str);
+                    values[idx] = std::move(child_val);
+                } else {
+                    keys.push_back(std::move(key_str));
+                    values.push_back(std::move(child_val));
+                }
             }
             return;
         }
@@ -1227,7 +1236,7 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
             // Incrementally materialize only the newly added key-value pair instead of
             // rebuilding the whole keys/values vectors
             // Note: pushKVEnd assumes unique keys (no replacement)
-            // For primitives: we already know the type and value, so construct directly
+            // For primitives: we already have the value, just move it directly
             // For containers: need to materialize from the yyjson tree
             const char* kstr = yyjson_mut_get_str(new_key);
             size_t klen = yyjson_mut_get_len(new_key);
@@ -1236,20 +1245,21 @@ void UniValue::pushKVEnd(std::string key, UniValue val) {
                 key_str.assign(kstr, klen);
             }
             
-            UniValue child_val;
             if (val.typ != VOBJ && val.typ != VARR) {
-                // Primitive: directly construct UniValue from known value
-                child_val = UniValue(val.typ, val.val);
+                // Primitive: move the value directly
+                keys.push_back(std::move(key_str));
+                values.push_back(std::move(val));
             } else {
                 // Container: materialize from yyjson tree
+                UniValue child_val;
                 child_val.clear();
                 child_val.m_yyjson_doc = m_yyjson_doc;
                 child_val.m_yyjson_node = new_val;
                 child_val.materialize();
+                
+                keys.push_back(std::move(key_str));
+                values.push_back(std::move(child_val));
             }
-            
-            keys.push_back(std::move(key_str));
-            values.push_back(std::move(child_val));
             return;
         } else {
             // use_legacy_path is true: container without yyjson tree
