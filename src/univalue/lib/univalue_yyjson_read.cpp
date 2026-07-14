@@ -298,8 +298,13 @@ bool UniValue::read(std::string_view str_in) {
             break;
     }
 
-    // Primitives are materialized, containers are not (lazy materialization)
-    m_materialized = (typ != VARR && typ != VOBJ);
+    // Eager materialization: materialize containers immediately
+    if (typ == VARR || typ == VOBJ) {
+        materialize_unsafe();
+        m_materialized = true;
+    } else {
+        m_materialized = true;
+    }
 
     return true;
 }
