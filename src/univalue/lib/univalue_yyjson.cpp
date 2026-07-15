@@ -120,7 +120,8 @@ UniValue::UniValue() : typ(VNULL) {
  * @param type The value type (VOBJ, VARR, VNULL, VSTR, VNUM, or VBOOL)
  * @param str The string value (for VSTR, VNUM, VBOOL) or ignored for containers
  */
-UniValue::UniValue(UniValue::VType type, std::string str) : typ(type) {
+UniValue::UniValue(UniValue::VType type, std::string str)
+     : typ(type), m_materialized(false) {
     // Containers need yyjson documents for tree building
     if (type == VOBJ || type == VARR) {
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
@@ -182,7 +183,7 @@ UniValue::~UniValue() {}
  * @param other The UniValue to copy from
  */
 UniValue::UniValue(const UniValue& other)
-    : typ(other.typ)
+    : typ(other.typ), m_materialized(false)
 {
     // Initialize yyjson state to null (will be set below if needed)
     m_yyjson_doc = nullptr;
