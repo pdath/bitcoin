@@ -132,6 +132,7 @@ void UniValue::getObjMap(std::map<std::string,UniValue>& kv) const {
 
     materializeIfNeeded();
 
+    kv.clear();
     for (size_t i = 0; i < keys.size(); ++i) {
         kv[keys[i]] = values[i];
     }
