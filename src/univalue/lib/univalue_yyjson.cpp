@@ -668,6 +668,10 @@ void UniValue::checkType(const VType& expected) const {
  * Populates the `val`, `keys`, and `values` members from the yyjson tree.
  * This is the main materialization method - callers ensure thread safety through eager materialization.
  *
+ * SPECIAL NOTE: Neither UniValue nor yyjson are thread safe.  Depsite
+ * this returning a const, the contents can change.  The caller must provide
+ * their own thread safety mechanism.
+ * 
  * For primitives: Extracts the value from the yyjson node into `val`
  * For arrays: Builds the `values` vector from the yyjson array
  * For objects: Builds both `keys` and `values` vectors from the yyjson object
@@ -1079,11 +1083,10 @@ void UniValue::pushKV(std::string key, UniValue val) {
                 throw std::bad_alloc();
             }
 
-            // Optimization: Use yyjson_mut_obj_put which handles both new and existing keys
-            // in a single operation, avoiding the separate check+remove+add pattern
-            if (!yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val)) {
-                throw std::runtime_error("yyjson_mut_obj_put failed");
-            }
+            // Use yyjson_mut_obj_put which handles both new and existing keys
+            // in a single operation: replaces the first matching key's value in place
+            // (preserving key order), removes any further duplicates, or appends
+            // at the end if the key is new.
             if (!yyjson_mut_obj_put((yyjson_mut_val*)m_yyjson_node, new_key, new_val)) {
                 throw std::runtime_error("yyjson_mut_obj_put failed");
             }
