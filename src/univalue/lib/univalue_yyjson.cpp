@@ -125,6 +125,7 @@ UniValue::UniValue(UniValue::VType type, std::string str)
     // Containers need yyjson documents for tree building
     if (type == VOBJ || type == VARR) {
         m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+        if (!m_yyjson_doc) throw std::bad_alloc();
 
         switch (type) {
             case VOBJ:
@@ -138,6 +139,7 @@ UniValue::UniValue(UniValue::VType type, std::string str)
                 m_yyjson_node = nullptr;
                 break;
         }
+        if (!m_yyjson_node) throw std::bad_alloc();
         setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
         // Eager materialization: populate legacy representation immediately
         materialize();
@@ -639,6 +641,8 @@ void UniValue::setArray() {
 void UniValue::setObject() {
     clear();
     m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
+    if (!m_yyjson_doc) throw std::bad_alloc();
+
     m_yyjson_node = yyjson_mut_obj(m_yyjson_doc.get());
     setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
     typ = VOBJ;
@@ -1343,8 +1347,6 @@ bool UniValue::checkObject(const std::map<std::string,UniValue::VType>& memberTy
  * @brief Append multiple values to an array
  *
  * Convenience method to append all values from a vector.
- *
- * @param vec The vector of values to append
  */
 void UniValue::push_backV(const std::vector<UniValue>& vec)
 {
@@ -1353,8 +1355,7 @@ void UniValue::push_backV(const std::vector<UniValue>& vec)
     // This handles cases like arr.push_backV(arr.values) and nested cases like arr.push_backV(arr[0].values)
     // The snapshot ensures stable iteration even if push_back causes reallocation of this->values
     std::vector<UniValue> snapshot = vec;
-    for (const auto& v : snapshot) {
-        push_back(v);
+    for (auto& v : snapshot) {
+        push_back(std::move(v));
     }
 }
-
