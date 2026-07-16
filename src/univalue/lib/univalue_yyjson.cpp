@@ -539,11 +539,10 @@ void UniValue::setNumStr(std::string str) {
     }
 
     clear();
-    m_yyjson_doc = std::shared_ptr<yyjson_mut_doc>(yyjson_mut_doc_new(nullptr), yyjson_doc_deleter);
-    m_yyjson_node = yyjson_mut_rawncpy(m_yyjson_doc.get(), str.data(), str.size());
-    setYyjsonRoot(m_yyjson_doc.get(), m_yyjson_node);
+    m_yyjson_doc = nullptr;
+    m_yyjson_node = nullptr;
     typ = VNUM;
-    val = str;  // Store number string for fast access
+    val = std::move(str);
     m_materialized = true;  // Primitives are always materialized
 }
 
