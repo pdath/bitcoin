@@ -594,15 +594,9 @@ void UniValue::setInt(int64_t val_) {
  * @param val_ The floating-point value
  */
 void UniValue::setFloat(double val_) {
-    clear();
     std::ostringstream ss;
     ss << std::setprecision(16) << val_;
-    std::string str = ss.str();
-    m_yyjson_doc = nullptr;
-    m_yyjson_node = nullptr;
-    typ = VNUM;
-    val = str;  // Store number string for fast access
-    m_materialized = true;  // Primitives are always materialized
+    setNumStr(ss.str());
 }
 
 /**
