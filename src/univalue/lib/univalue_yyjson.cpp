@@ -483,6 +483,9 @@ static bool validNumStr(const std::string& s) {
         raw++; // Also advance raw past the sign
     }
 
+    if (firstDigit == end)
+        return false;
+
     if (!json_isdigit(static_cast<unsigned char>(*firstDigit)))
         return false;
 
