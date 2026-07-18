@@ -239,7 +239,7 @@ void UniValue::push_backV(It first, It last)
         snapshot.push_back(*it);
     }
     for (const auto& v : snapshot) {
-        push_back(std::move(v));
+        push_back(v);
     }
 #else
     values.insert(values.end(), first, last);
