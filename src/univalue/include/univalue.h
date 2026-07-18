@@ -6,13 +6,11 @@
 #ifndef BITCOIN_UNIVALUE_INCLUDE_UNIVALUE_H
 #define BITCOIN_UNIVALUE_INCLUDE_UNIVALUE_H
 
-#include <atomic>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
