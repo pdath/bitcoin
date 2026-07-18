@@ -118,7 +118,7 @@ void UniValue::push_backV(const std::vector<UniValue>& vec)
     // invalidate such references, causing undefined behavior.
     std::vector<UniValue> snapshot = vec;
     for (const auto& v : snapshot) {
-        push_back(std::move(v));
+        push_back(v);
     }
 }
 
