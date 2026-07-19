@@ -386,7 +386,7 @@ jobs:
             cirrus-runner: 'ubuntu-24.04-arm'
             fallback-runner: 'ubuntu-24.04-arm'
             timeout-minutes: 120
-            file-env: './ci/test/00_setup_env_native_yyjson_arm64.sh'            
+            file-env: './ci/test/00_setup_env_native_yyjson.sh'            
 
     steps:
       - *CHECKOUT
