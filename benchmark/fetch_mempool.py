@@ -71,8 +71,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="benchmark",
-        help="Output directory (default: benchmark/)"
+        default=".",
+        help="Output directory (default: current directory)"
     )
     args = parser.parse_args()
 
