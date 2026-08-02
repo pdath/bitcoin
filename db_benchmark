@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -e
+
+# Each build can take 20 minutes
+nice cmake --build build-leveldb -j$(nproc) -t db_benchmark
+nice cmake --build build-rocksdb -j$(nproc) -t db_benchmark
+nice cmake --build build-lmdb -j$(nproc) -t db_benchmark
+
+#exit
+
+rm -rf ./benchmark/data/leveldb_chainstate
+rm -rf ./benchmark/data/rocksdb_chainstate
+rm -rf ./benchmark/data/lmdb_chainstate
+
+./build-leveldb/bin/db_benchmark --engine=leveldb --workload=ibd
+./build-rocksdb/bin/db_benchmark --engine=rocksdb --workload=ibd
+./build-rocksdb/bin/db_benchmark --engine=lmdb --workload=ibd
+
+du -sh ./benchmark/data/*

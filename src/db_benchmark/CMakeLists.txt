@@ -67,6 +67,7 @@ target_link_libraries(db_benchmark
     PRIVATE
     core_interface
     bitcoin_common
+    bitcoin_node
     bitcoin_util
     leveldb
     univalue

@@ -6,10 +6,11 @@
 #define BITCOIN_BENCHMARK_LMDB_COINSVIEW_HPP
 
 #include <coins.h>
-#include <txdb.h>  // For CCoinsViewDB base class definition
+#include <txdb.h>  // For DBParams, CoinsViewOptions
 
 // Forward declaration for LMDB
 typedef struct MDB_env MDB_env;
+typedef unsigned int MDB_dbi;
 
 /**
  * LMDB implementation of CCoinsView.
@@ -17,7 +18,7 @@ typedef struct MDB_env MDB_env;
 class CCoinsViewDB_LMDB : public CCoinsView {
 private:
     MDB_env* m_env;
-    int m_dbi;
+    MDB_dbi m_dbi;
     std::string m_path;
     size_t m_map_size;
 

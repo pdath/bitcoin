@@ -7,16 +7,25 @@
 #include <util/translation.h>
 const TranslateFn G_TRANSLATION_FUN{nullptr};
 
+#include <consensus/consensus.h> // For MAX_BLOCK_SERIALIZED_SIZE
 #include <coins.h>
-#include <txdb.h>
+#include <flatfile.h>
+#include <kernel/messagestartchars.h>
+#include <node/blockstorage.h> // For BLOCKFILE_CHUNK_SIZE
 #include <primitives/block.h>
+#include <primitives/transaction.h> // For TX_WITH_WITNESS
+#include <serialize.h> // For MAX_SIZE
+#include <streams.h>
+#include <undo.h>
 #include <util/fs.h>
+#include <util/obfuscation.h>
 #include <util/strencodings.h>
 
 #include <chrono>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 // Metrics collector
 #include <metrics_collector.hpp>
@@ -32,6 +41,162 @@ extern BenchmarkMetricsCollector g_metrics_collector;
 std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_t cache_size);
 
 /**
+ * Load XOR key from file
+ */
+static Obfuscation LoadXorKey(const fs::path& blocks_dir) {
+    fs::path xor_key_path = blocks_dir / "xor.dat";
+    
+    std::array<std::byte, Obfuscation::KEY_SIZE> xor_key{};
+    
+    if (fs::exists(xor_key_path)) {
+        AutoFile xor_key_file{fsbridge::fopen(xor_key_path, "rb")};
+        xor_key_file >> xor_key;
+    }
+    
+    return Obfuscation{xor_key};
+}
+
+/**
+ * Read all blocks from block files and apply to coins view.
+ * Based on ChainstateManager::LoadExternalBlockFile from validation.cpp
+ */
+static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir, Obfuscation xor_key) {
+    FlatFileSeq block_file_seq(blocks_dir, "blk", node::BLOCKFILE_CHUNK_SIZE);
+    
+    int nFile = 0;
+    uint64_t nTotalBytes = 0;
+    int nBlocks = 0;
+    auto nStart = std::chrono::high_resolution_clock::now();
+    
+    while (true) {
+        FlatFilePos pos{nFile, 0};
+        fs::path filename = block_file_seq.FileName(pos);
+        if (!fs::exists(filename)) {
+            break; // No more block files
+        }
+        
+        std::cout << "Processing file: " << fs::PathToString(filename) << "\n";
+        
+        try {
+            FILE* file = block_file_seq.Open(pos, true);
+            if (!file) {
+                std::cerr << "Failed to open block file: " << fs::PathToString(filename) << "\n";
+                nFile++;
+                continue;
+            }
+            
+            // Use AutoFile with XOR key for de-obfuscation
+            // AutoFile takes ownership of the FILE*, will close it automatically
+            AutoFile file_in{file, xor_key};
+            
+            // Use BufferedFile for efficient reading with rewind capability
+            BufferedFile blkdat{file_in, 2 * MAX_BLOCK_SERIALIZED_SIZE, MAX_BLOCK_SERIALIZED_SIZE + 8};
+            uint64_t nRewind = blkdat.GetPos();
+            
+            // Read all blocks from this file
+            while (!blkdat.eof()) {
+                blkdat.SetPos(nRewind);
+                nRewind++; // start one byte further next time, in case of failure
+                blkdat.SetLimit(); // remove former limit
+                
+                unsigned int nSize = 0;
+                try {
+                    // Locate a header by searching for the first magic byte
+                    // Mainnet magic bytes: 0xf9, 0xbe, 0xb4, 0xd9
+                    constexpr std::byte MAINNET_MAGIC_BYTE = std::byte{0xf9};
+                    blkdat.FindByte(MAINNET_MAGIC_BYTE);
+                    nRewind = blkdat.GetPos() + 1;
+                    
+                    // Read full magic bytes
+                    MessageStartChars buf;
+                    blkdat >> buf;
+                    
+                    // Read size
+                    blkdat >> nSize;
+                    if (nSize < 80 || nSize > MAX_BLOCK_SERIALIZED_SIZE) {
+                        continue;
+                    }
+                } catch (const std::exception&) {
+                    // End of file or read error
+                    break;
+                }
+                
+                try {
+                    // Remember position for rewinding
+                    const uint64_t nBlockPos = blkdat.GetPos();
+                    
+                    // Set limit to end of this block
+                    blkdat.SetLimit(nBlockPos + nSize);
+                    
+                    // Read and deserialize the block
+                    CBlock block;
+                    blkdat >> TX_WITH_WITNESS(block);
+                    
+                    // Update rewind position to after this block
+                    nRewind = blkdat.GetPos();
+                    blkdat.SkipTo(nRewind);
+                    
+                    // Process transactions in block
+                    for (size_t i = 0; i < block.vtx.size(); ++i) {
+                        const CTransaction& tx = *block.vtx[i];
+                        bool is_coinbase = (i == 0);
+                        int nHeight = 0; // We don't track height in this simple benchmark
+                        
+                        if (is_coinbase) {
+                            AddCoins(cache, tx, nHeight, true);
+                        } else {
+                            // Spend inputs
+                            for (const CTxIn& txin : tx.vin) {
+                                Coin coin;
+                                bool is_spent = cache.SpendCoin(txin.prevout, &coin);
+                                if (!is_spent) {
+                                    // In benchmark mode during initial sync, inputs might not exist yet
+                                    // This can happen with out-of-order blocks, but for a reindex
+                                    // starting from genesis, all inputs should exist
+                                }
+                            }
+                            // Add outputs
+                            AddCoins(cache, tx, nHeight, false);
+                        }
+                    }
+                    
+                    nBlocks++;
+                    nTotalBytes += nSize;
+                    
+                    // Flush cache periodically to avoid using too much memory
+                    if (nBlocks % 1000 == 0) {
+                        cache.Flush();
+                        std::cout << "  Processed " << nBlocks << " blocks (" << nTotalBytes / 1024 / 1024 << " MB)...\n";
+                    }
+                } catch (const std::exception& e) {
+                    // Block failed to deserialize, try next one
+                    // This can happen with historical bugs that added extra data
+                    std::cerr << "Block deserialization error at file offset " << (nRewind - 1) << ": " << e.what() << ". Continuing...\n";
+                    continue;
+                }
+            }
+            // AutoFile (file_in) and BufferedFile (blkdat) will close the file automatically
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing file " << fs::PathToString(filename) << ": " << e.what() << "\n";
+            // Don't manually close - AutoFile handles it
+        }
+        
+        nFile++;
+    }
+    
+    // Final flush
+    cache.Flush();
+    
+    auto nEnd = std::chrono::high_resolution_clock::now();
+    double nSeconds = std::chrono::duration<double>(nEnd - nStart).count();
+    
+    std::cout << "\nProcessed " << nBlocks << " blocks, " << nTotalBytes / 1024 / 1024 << " MB in " << nSeconds << " seconds\n";
+    if (nSeconds > 0) {
+        std::cout << "Throughput: " << (nTotalBytes / 1024.0 / 1024.0 / nSeconds) << " MB/s\n";
+    }
+}
+
+/**
  * Run the IBD benchmark.
  */
 void RunIBDBenchmark(CCoinsView& db_view) {
@@ -40,13 +205,15 @@ void RunIBDBenchmark(CCoinsView& db_view) {
     // Create cache
     CCoinsViewCache cache(&db_view);
     
-    // TODO: Implement actual block processing
-    // For now, just do a simple test
+    // Load XOR key and process blocks
+    fs::path blocks_dir = fs::u8path("/home/knots-mainnet/.bitcoin/blocks");
+    Obfuscation xor_key = LoadXorKey(blocks_dir);
+    
+    ProcessAllBlocks(cache, blocks_dir, xor_key);
+    
+    // Get final best block
     uint256 best_block = db_view.GetBestBlock();
     std::cout << "Best block: " << best_block.ToString() << "\n";
-    
-    // Note: Skipping BatchWrite/Flush tests for now as they require proper setup
-    // The basic GetCoin/GetBestBlock interface works
     
     std::cout << "IBD benchmark completed.\n";
 }

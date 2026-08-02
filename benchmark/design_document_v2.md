@@ -15,10 +15,62 @@ This document describes the **as-built** implementation of the database benchmar
 - **CCoinsView vs CCoinsViewDB**: Since `CCoinsViewDB` is declared `final` in Bitcoin Knots, we implement `CCoinsView` directly for each database engine
 - **Simplified Architecture**: Database implementations are self-contained in `src/db_benchmark/` rather than being wrappers around the existing `CCoinsViewDB`
 - **Direct Database Usage**: Each implementation directly uses its respective database library (leveldb, rocksdb, lmdb) without the `CDBWrapper` abstraction
+- **LMDB const_cast Fix**: LMDB API requires `char*` but Bitcoin Knots uses `std::byte*` in DataStream. Fixed using pattern: `const_cast<char*>(reinterpret_cast<const void*>(ptr))`
 
 ---
 
-## 2. Directory Structure
+## 2. Quick Start: Build & Run Instructions
+
+### Prerequisites
+- Bitcoin Knots source code
+- CMake 3.10+
+- Required database libraries: `liblmdb-dev`, `librocksdb-dev`, `libleveldb-dev`
+- Data directory: `~/bitcoin/benchmark/data/` (created automatically)
+
+### Build and Run Commands
+
+#### LevelDB
+```bash
+cmake -B build-leveldb -DWITH_LEVELDB=ON -DWITH_ROCKSDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
+cmake --build build-leveldb -j4 -t db_benchmark
+./build-leveldb/bin/db_benchmark --engine=leveldb --workload=ibd
+```
+
+#### RocksDB
+```bash
+cmake -B build-rocksdb -DWITH_ROCKSDB=ON -DWITH_LEVELDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
+cmake --build build-rocksdb -j4 -t db_benchmark
+./build-rocksdb/bin/db_benchmark --engine=rocksdb --workload=ibd
+```
+
+#### LMDB
+```bash
+cmake -B build-lmdb -DWITH_LMDB=ON -DWITH_LEVELDB=OFF -DWITH_ROCKSDB=OFF -DRDTS_CONSENT=IMPLICIT
+cmake --build build-lmdb -j4 -t db_benchmark
+./build-lmdb/bin/db_benchmark --engine=lmdb --workload=ibd
+```
+
+#### Run All Engines
+```bash
+# Build each engine separately
+cmake -B build-leveldb -DWITH_LEVELDB=ON -DWITH_ROCKSDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
+cmake --build build-leveldb -j4 -t db_benchmark
+
+cmake -B build-rocksdb -DWITH_ROCKSDB=ON -DWITH_LEVELDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
+cmake --build build-rocksdb -j4 -t db_benchmark
+
+cmake -B build-lmdb -DWITH_LMDB=ON -DWITH_LEVELDB=OFF -DWITH_ROCKSDB=OFF -DRDTS_CONSENT=IMPLICIT
+cmake --build build-lmdb -j4 -t db_benchmark
+
+# Run benchmarks
+./build-leveldb/bin/db_benchmark --engine=leveldb --workload=ibd
+./build-rocksdb/bin/db_benchmark --engine=rocksdb --workload=ibd
+./build-lmdb/bin/db_benchmark --engine=lmdb --workload=ibd
+```
+
+---
+
+## 3. Directory Structure
 
 ```
 bitcoin/
@@ -47,39 +99,6 @@ bitcoin/
             ├── coinsview.hpp      # LMDB CCoinsView header
             └── coinsview.cpp      # LMDB CCoinsView implementation
 ```
-
----
-
-## 3. CMake Build Configuration
-
-### Build Flags
-```cmake
-# Select database engine (mutually exclusive)
--DWITH_LEVELDB=ON   # Build with LevelDB
--DWITH_ROCKSDB=ON   # Build with RocksDB  
--DWITH_LMDB=ON      # Build with LMDB
--DRDTS_CONSENT=IMPLICIT  # Required for Bitcoin Knots build
-```
-
-### Example Build Commands
-```bash
-# LevelDB
-cmake -B build-leveldb -DWITH_LEVELDB=ON -DWITH_ROCKSDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
-cmake --build build-leveldb -j4 -t db_benchmark
-
-# RocksDB
-cmake -B build-rocksdb -DWITH_ROCKSDB=ON -DWITH_LEVELDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
-cmake --build build-rocksdb -j4 -t db_benchmark
-
-# LMDB (when fixed)
-cmake -B build-lmdb -DWITH_LMDB=ON -DWITH_LEVELDB=OFF -DWITH_ROCKSDB=OFF -DRDTS_CONSENT=IMPLICIT
-cmake --build build-lmdb -j4 -t db_benchmark
-```
-
-### CMake Target
-- **Target name**: `db_benchmark`
-- **Output location**: `<build-dir>/bin/db_benchmark`
-- **Dependencies**: `core_interface`, `bitcoin_common`, `bitcoin_util`, `leveldb`, `univalue` (+ rocksdb/lmdb as needed)
 
 ---
 
@@ -123,8 +142,8 @@ std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_
 ### 4.3 LMDB Implementation
 - **Class**: `CCoinsViewDB_LMDB : public CCoinsView`
 - **Files**: `src/db_benchmark/lmdb/coinsview.hpp/cpp`
-- **Status**: ⚠️ Needs const_cast fixes
-- **Issue**: LMDB API requires `char*` but DataStream uses `std::byte*`. Need proper casting.
+- **Status**: ✅ Working (const_cast fixes applied)
+- **Details**: LMDB API requires `char*` but DataStream uses `std::byte*`. Fixed using pattern: `const_cast<char*>(reinterpret_cast<const void*>(ptr))` throughout the implementation.
 
 ---
 
@@ -148,12 +167,12 @@ main()
 ### ✅ Working
 - LevelDB implementation builds and runs
 - RocksDB implementation builds and runs
+- LMDB implementation builds and runs (const_cast fixes applied)
 - CMake configuration with engine selection
 - Factory pattern for database creation
 - Basic benchmark infrastructure
 
 ### ⚠️ Partial / Needs Work
-- LMDB implementation (const_cast issues)
 - Actual IBD workload (currently minimal test)
 - Actual steady-state workload (currently minimal test)
 - Full metrics collection
@@ -161,32 +180,7 @@ main()
 
 ---
 
-## 7. Build & Run Examples
-
-### LevelDB
-```bash
-cmake -B build-leveldb -DWITH_LEVELDB=ON -DWITH_ROCKSDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
-cmake --build build-leveldb -j4 -t db_benchmark
-./build-leveldb/bin/db_benchmark --engine=leveldb --workload=ibd
-```
-
-### RocksDB
-```bash
-cmake -B build-rocksdb -DWITH_ROCKSDB=ON -DWITH_LEVELDB=OFF -DWITH_LMDB=OFF -DRDTS_CONSENT=IMPLICIT
-cmake --build build-rocksdb -j4 -t db_benchmark
-./build-rocksdb/bin/db_benchmark --engine=rocksdb --workload=ibd
-```
-
-### LMDB (when fixed)
-```bash
-cmake -B build-lmdb -DWITH_LMDB=ON -DWITH_LEVELDB=OFF -DWITH_ROCKSDB=OFF -DRDTS_CONSENT=IMPLICIT
-cmake --build build-lmdb -j4 -t db_benchmark
-./build-lmdb/bin/db_benchmark --engine=lmdb --workload=ibd
-```
-
----
-
-## 8. Key Implementation Details
+## 7. Key Implementation Details
 
 ### Data Encoding
 All implementations use the same key encoding as Bitcoin Knots:
@@ -225,10 +219,9 @@ if (hashBlock.IsNull()) {
 
 ---
 
-## 9. Next Steps
+## 8. Next Steps
 
-1. Fix LMDB const_cast issues
-2. Implement IBD block processing
-3. Implement mempool replay from getrawmempool.json
-4. Add full metrics collection
-5. Create results directory and JSON export
+1. Implement IBD block processing
+2. Implement mempool replay from getrawmempool.json
+3. Add full metrics collection
+4. Create results directory and JSON export

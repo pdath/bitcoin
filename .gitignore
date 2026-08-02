@@ -3,6 +3,11 @@
 !/build-aux
 !/build_msvc
 
+# Database benchmark build directories
+/build-leveldb*
+/build-rocksdb*
+/build-lmdb*
+
 *.pyc
 
 # Only ignore unexpected patches
@@ -24,3 +29,6 @@ test/lint/test_runner/target/
 
 # DB Benchmarking
 /benchmark/data/*
+/benchmark/results/*
+/benchmark/getrawmempool.json
+/benchmark/BUILD_STATUS.md

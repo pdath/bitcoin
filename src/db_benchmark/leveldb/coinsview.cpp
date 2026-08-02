@@ -126,26 +126,26 @@ std::vector<uint256> CCoinsViewDB_LevelDB::GetHeadBlocks() const {
 
 bool CCoinsViewDB_LevelDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashBlock) {
     leveldb::WriteBatch batch;
-    if (hashBlock.IsNull()) {
-        return false;  // Skip if no block hash provided
-    }
 
-    uint256 old_tip = GetBestBlock();
-    if (old_tip.IsNull()) {
-        std::vector<uint256> old_heads = GetHeadBlocks();
-        if (old_heads.size() == 2) {
-            assert(old_heads[0] == hashBlock);
-            old_tip = old_heads[1];
+    if (!hashBlock.IsNull()) {
+        // Full block write with best block tracking
+        uint256 old_tip = GetBestBlock();
+        if (old_tip.IsNull()) {
+            std::vector<uint256> old_heads = GetHeadBlocks();
+            if (old_heads.size() == 2) {
+                assert(old_heads[0] == hashBlock);
+                old_tip = old_heads[1];
+            }
         }
-    }
 
-    // Mark transition
-    batch.Delete(std::string(1, DB_BEST_BLOCK));
-    {
-        DataStream ssKey, ssValue;
-        ssKey << DB_HEAD_BLOCKS;
-        ssValue << std::vector<uint256>{hashBlock, old_tip};
-        batch.Put(ssKey.str(), ssValue.str());
+        // Mark transition
+        batch.Delete(std::string(1, DB_BEST_BLOCK));
+        {
+            DataStream ssKey, ssValue;
+            ssKey << DB_HEAD_BLOCKS;
+            ssValue << std::vector<uint256>{hashBlock, old_tip};
+            batch.Put(ssKey.str(), ssValue.str());
+        }
     }
 
     // Process cursor
@@ -166,13 +166,15 @@ bool CCoinsViewDB_LevelDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint25
         it = cursor.NextAndMaybeErase(*it);
     }
 
-    // Mark consistent
-    batch.Delete(std::string(1, DB_HEAD_BLOCKS));
-    {
-        DataStream ssKey, ssValue;
-        ssKey << DB_BEST_BLOCK;
-        ssValue << hashBlock;
-        batch.Put(ssKey.str(), ssValue.str());
+    if (!hashBlock.IsNull()) {
+        // Mark consistent
+        batch.Delete(std::string(1, DB_HEAD_BLOCKS));
+        {
+            DataStream ssKey, ssValue;
+            ssKey << DB_BEST_BLOCK;
+            ssValue << hashBlock;
+            batch.Put(ssKey.str(), ssValue.str());
+        }
     }
 
     leveldb::Status status = m_db->Write(leveldb::WriteOptions(), &batch);

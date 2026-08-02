@@ -5,7 +5,6 @@
 #include <lmdb/coinsview.hpp>
 
 #include <serialize.h>
-#include <span.h>
 #include <streams.h>
 #include <util/fs.h>
 
@@ -20,7 +19,7 @@ static constexpr uint8_t DB_BEST_BLOCK = 'B';
 static constexpr uint8_t DB_HEAD_BLOCKS = 'H';
 
 CCoinsViewDB_LMDB::CCoinsViewDB_LMDB(const DBParams& db_params, const CoinsViewOptions& options)
-    : m_path(PathToString(db_params.path)), m_map_size(db_params.cache_bytes) {
+    : m_path(db_params.path.string()), m_map_size(db_params.cache_bytes) {
     
     int rc = mdb_env_create(&m_env);
     assert(rc == MDB_SUCCESS);
@@ -58,7 +57,7 @@ std::optional<Coin> CCoinsViewDB_LMDB::GetCoin(const COutPoint& outpoint) const 
     
     MDB_val key;
     key.mv_size = ssKey.size();
-    key.mv_data = reinterpret_cast<char*>(ssKey.data());
+    key.mv_data = const_cast<char*>(ssKey.data());
     
     MDB_val value;
     rc = mdb_get(txn, m_dbi, &key, &value);
@@ -69,8 +68,7 @@ std::optional<Coin> CCoinsViewDB_LMDB::GetCoin(const COutPoint& outpoint) const 
     }
     
     try {
-        DataStream ssValue;
-        ssValue.write(Span<const std::byte>(reinterpret_cast<const std::byte*>(value.mv_data), value.mv_size));
+        DataStream ssValue(std::string(static_cast<char*>(value.mv_data), value.mv_size));
         Coin coin;
         ssValue >> coin;
         return coin;
@@ -89,7 +87,7 @@ bool CCoinsViewDB_LMDB::HaveCoin(const COutPoint& outpoint) const {
     
     MDB_val key;
     key.mv_size = ssKey.size();
-    key.mv_data = reinterpret_cast<char*>(ssKey.data());
+    key.mv_data = const_cast<char*>(ssKey.data());
     
     MDB_val value;
     rc = mdb_get(txn, m_dbi, &key, &value);
@@ -105,8 +103,7 @@ uint256 CCoinsViewDB_LMDB::GetBestBlock() const {
     
     MDB_val key;
     key.mv_size = 1;
-    uint8_t best_block_key = DB_BEST_BLOCK;
-    key.mv_data = reinterpret_cast<char*>(&best_block_key);
+    key.mv_data = const_cast<char*>(&DB_BEST_BLOCK);
     
     MDB_val value;
     rc = mdb_get(txn, m_dbi, &key, &value);
@@ -117,8 +114,7 @@ uint256 CCoinsViewDB_LMDB::GetBestBlock() const {
     }
     
     try {
-        DataStream ssValue;
-        ssValue.write(Span<const std::byte>(reinterpret_cast<const std::byte*>(value.mv_data), value.mv_size));
+        DataStream ssValue(std::string(static_cast<char*>(value.mv_data), value.mv_size));
         uint256 hash;
         ssValue >> hash;
         return hash;
@@ -134,8 +130,7 @@ std::vector<uint256> CCoinsViewDB_LMDB::GetHeadBlocks() const {
     
     MDB_val key;
     key.mv_size = 1;
-    uint8_t head_blocks_key = DB_HEAD_BLOCKS;
-    key.mv_data = reinterpret_cast<char*>(&head_blocks_key);
+    key.mv_data = const_cast<char*>(&DB_HEAD_BLOCKS);
     
     MDB_val value;
     rc = mdb_get(txn, m_dbi, &key, &value);
@@ -146,8 +141,7 @@ std::vector<uint256> CCoinsViewDB_LMDB::GetHeadBlocks() const {
     }
     
     try {
-        DataStream ssValue;
-        ssValue.write(Span<const std::byte>(reinterpret_cast<const std::byte*>(value.mv_data), value.mv_size));
+        DataStream ssValue(std::string(static_cast<char*>(value.mv_data), value.mv_size));
         std::vector<uint256> heads;
         ssValue >> heads;
         return heads;
@@ -160,42 +154,40 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
     MDB_txn* txn = nullptr;
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, 0, &txn);
     assert(rc == MDB_SUCCESS);
+    
+    assert(!hashBlock.IsNull());
 
-    if (!hashBlock.IsNull()) {
-        // Full block write with best block tracking
-        uint256 old_tip = GetBestBlock();
-        if (old_tip.IsNull()) {
-            std::vector<uint256> old_heads = GetHeadBlocks();
-            if (old_heads.size() == 2) {
-                assert(old_heads[0] == hashBlock);
-                old_tip = old_heads[1];
-            }
+    uint256 old_tip = GetBestBlock();
+    if (old_tip.IsNull()) {
+        std::vector<uint256> old_heads = GetHeadBlocks();
+        if (old_heads.size() == 2) {
+            assert(old_heads[0] == hashBlock);
+            old_tip = old_heads[1];
         }
+    }
 
-        // Mark transition
-        {
-            MDB_val key;
-            key.mv_size = 1;
-            uint8_t best_block_key = DB_BEST_BLOCK;
-            key.mv_data = reinterpret_cast<char*>(&best_block_key);
-            rc = mdb_del(txn, m_dbi, &key, nullptr);
-            assert(rc == MDB_SUCCESS);
-        }
+    // Mark transition
+    {
+        MDB_val key;
+        key.mv_size = 1;
+        key.mv_data = const_cast<char*>(&DB_BEST_BLOCK);
+        rc = mdb_del(txn, m_dbi, &key, nullptr);
+        assert(rc == MDB_SUCCESS);
+    }
+    
+    {
+        DataStream ssKey, ssValue;
+        ssKey << DB_HEAD_BLOCKS;
+        ssValue << std::vector<uint256>{hashBlock, old_tip};
         
-        {
-            DataStream ssKey, ssValue;
-            ssKey << DB_HEAD_BLOCKS;
-            ssValue << std::vector<uint256>{hashBlock, old_tip};
-            
-            MDB_val key, value;
-            key.mv_size = ssKey.size();
-            key.mv_data = reinterpret_cast<char*>(ssKey.data());
-            value.mv_size = ssValue.size();
-            value.mv_data = reinterpret_cast<char*>(ssValue.data());
-            
-            rc = mdb_put(txn, m_dbi, &key, &value, 0);
-            assert(rc == MDB_SUCCESS);
-        }
+        MDB_val key, value;
+        key.mv_size = ssKey.size();
+        key.mv_data = const_cast<char*>(ssKey.data());
+        value.mv_size = ssValue.size();
+        value.mv_data = const_cast<char*>(ssValue.data());
+        
+        rc = mdb_put(txn, m_dbi, &key, &value, 0);
+        assert(rc == MDB_SUCCESS);
     }
 
     // Process cursor
@@ -206,7 +198,7 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
             
             MDB_val key;
             key.mv_size = ssKey.size();
-            key.mv_data = reinterpret_cast<char*>(ssKey.data());
+            key.mv_data = const_cast<char*>(ssKey.data());
             
             if (it->second.coin.IsSpent()) {
                 rc = mdb_del(txn, m_dbi, &key, nullptr);
@@ -217,7 +209,7 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
                 
                 MDB_val value;
                 value.mv_size = ssValue.size();
-                value.mv_data = reinterpret_cast<char*>(ssValue.data());
+                value.mv_data = const_cast<char*>(ssValue.data());
                 
                 rc = mdb_put(txn, m_dbi, &key, &value, 0);
                 assert(rc == MDB_SUCCESS);
@@ -226,31 +218,28 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
         it = cursor.NextAndMaybeErase(*it);
     }
 
-    if (!hashBlock.IsNull()) {
-        // Mark consistent
-        {
-            MDB_val key;
-            key.mv_size = 1;
-            uint8_t head_blocks_key = DB_HEAD_BLOCKS;
-            key.mv_data = reinterpret_cast<char*>(&head_blocks_key);
-            rc = mdb_del(txn, m_dbi, &key, nullptr);
-            assert(rc == MDB_SUCCESS);
-        }
+    // Mark consistent
+    {
+        MDB_val key;
+        key.mv_size = 1;
+        key.mv_data = const_cast<char*>(&DB_HEAD_BLOCKS);
+        rc = mdb_del(txn, m_dbi, &key, nullptr);
+        assert(rc == MDB_SUCCESS);
+    }
+    
+    {
+        DataStream ssKey, ssValue;
+        ssKey << DB_BEST_BLOCK;
+        ssValue << hashBlock;
         
-        {
-            DataStream ssKey, ssValue;
-            ssKey << DB_BEST_BLOCK;
-            ssValue << hashBlock;
-            
-            MDB_val key, value;
-            key.mv_size = ssKey.size();
-            key.mv_data = reinterpret_cast<char*>(ssKey.data());
-            value.mv_size = ssValue.size();
-            value.mv_data = reinterpret_cast<char*>(ssValue.data());
-            
-            rc = mdb_put(txn, m_dbi, &key, &value, 0);
-            assert(rc == MDB_SUCCESS);
-        }
+        MDB_val key, value;
+        key.mv_size = ssKey.size();
+        key.mv_data = const_cast<char*>(ssKey.data());
+        value.mv_size = ssValue.size();
+        value.mv_data = const_cast<char*>(ssValue.data());
+        
+        rc = mdb_put(txn, m_dbi, &key, &value, 0);
+        assert(rc == MDB_SUCCESS);
     }
 
     rc = mdb_txn_commit(txn);
