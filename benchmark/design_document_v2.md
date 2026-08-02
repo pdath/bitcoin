@@ -78,6 +78,9 @@ bitcoin/
 │   ├── requirements_document.md    # Original requirements
 │   ├── design_document.md          # Original design
 │   ├── design_document_v2.md       # This updated design
+│   ├── getrawmempool_full.json    # Full mempool transaction data for steady-state benchmark
+│   ├── fetch_mempool.py            # Script to fetch mempool data from Bitcoin Core
+│   ├── results/                    # Benchmark results
 │   └── data/                       # Benchmark databases
 │       ├── leveldb_chainstate/     # LevelDB database
 │       ├── rocksdb_chainstate/     # RocksDB database
@@ -173,10 +176,10 @@ main()
 - Basic benchmark infrastructure
 
 ### ⚠️ Partial / Needs Work
-- Actual IBD workload (currently minimal test)
-- Actual steady-state workload (currently minimal test)
-- Full metrics collection
-- Results export
+- Actual IBD workload (working with statistics)
+- Actual steady-state workload (uses getrawmempool_full.json with full transaction data)
+- Full metrics collection (implemented for both cache and DB layers)
+- Results export (includes all operation-level statistics in JSON)
 
 ---
 
@@ -222,6 +225,6 @@ if (hashBlock.IsNull()) {
 ## 8. Next Steps
 
 1. Implement IBD block processing
-2. Implement mempool replay from getrawmempool.json
+2. Implement mempool replay from getrawmempool_full.json
 3. Add full metrics collection
 4. Create results directory and JSON export

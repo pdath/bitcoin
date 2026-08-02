@@ -20,9 +20,12 @@ const TranslateFn G_TRANSLATION_FUN{nullptr};
 #include <util/fs.h>
 #include <util/obfuscation.h>
 #include <util/strencodings.h>
+#include <univalue.h> // For JSON parsing
 
 #include <chrono>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -254,6 +257,113 @@ void RunIBDBenchmark(CCoinsView& db_view) {
 }
 
 /**
+ * Load mempool transactions from JSON file.
+ * Expected format: array of transaction objects with "hex" field containing raw transaction bytes.
+ */
+static std::vector<CTransactionRef> LoadMempoolTransactions(const fs::path& mempool_file) {
+    std::vector<CTransactionRef> transactions;
+    
+    if (!fs::exists(mempool_file)) {
+        std::cerr << "Mempool file not found: " << fs::PathToString(mempool_file) << "\n";
+        return transactions;
+    }
+    
+    // Read file contents
+    std::string mempool_json;
+    {
+        std::ifstream ifs(fs::PathToString(mempool_file), std::ios::binary);
+        if (!ifs) {
+            std::cerr << "Failed to open mempool file: " << fs::PathToString(mempool_file) << "\n";
+            return transactions;
+        }
+        mempool_json = std::string((std::istreambuf_iterator<char>(ifs)),
+                                   std::istreambuf_iterator<char>());
+    }
+    
+    if (mempool_json.empty()) {
+        std::cerr << "Mempool file is empty: " << fs::PathToString(mempool_file) << "\n";
+        return transactions;
+    }
+    
+    UniValue mempool_data;
+    if (!mempool_data.read(mempool_json)) {
+        std::cerr << "Failed to parse mempool JSON: " << fs::PathToString(mempool_file) << "\n";
+        return transactions;
+    }
+    
+    if (!mempool_data.isArray()) {
+        std::cerr << "Mempool JSON is not an array: " << fs::PathToString(mempool_file) << "\n";
+        return transactions;
+    }
+    
+    for (size_t i = 0; i < mempool_data.size(); ++i) {
+        UniValue tx_obj = mempool_data[i];
+        if (!tx_obj.isObject()) continue;
+        
+        UniValue hex_value = tx_obj["hex"];
+        if (!hex_value.isStr()) continue;
+        
+        std::string hex_str = hex_value.get_str();
+        std::vector<unsigned char> tx_bytes = ParseHex(hex_str);
+        if (tx_bytes.empty()) {
+            std::cerr << "Failed to parse hex for transaction " << i << "\n";
+            continue;
+        }
+        
+        try {
+            DataStream ss(Span<const std::byte>(reinterpret_cast<const std::byte*>(tx_bytes.data()), tx_bytes.size()));
+            CTransactionRef tx = std::make_shared<CTransaction>(deserialize, TX_WITH_WITNESS, ss);
+            transactions.push_back(tx);
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to deserialize transaction " << i << ": " << e.what() << "\n";
+            continue;
+        }
+    }
+    
+    std::cout << "Loaded " << transactions.size() << " mempool transactions from " 
+              << fs::PathToString(mempool_file) << "\n";
+    return transactions;
+}
+
+/**
+ * Process mempool transactions against the coins view cache.
+ */
+static void ProcessMempoolTransactions(CCoinsViewCache& cache, const std::vector<CTransactionRef>& transactions) {
+    int nHeight = 0; // Steady-state doesn't track height
+    
+    for (size_t i = 0; i < transactions.size(); ++i) {
+        const CTransaction& tx = *transactions[i];
+        const Txid& txid = tx.GetHash();
+        
+        // Spend inputs
+        for (const CTxIn& txin : tx.vin) {
+            Coin coin;
+            {
+                ScopedTimer timer(g_metrics_collector.stats_cache_spend_coin);
+                bool is_spent = cache.SpendCoin(txin.prevout, &coin);
+                if (!is_spent) {
+                    // In mempool replay, inputs might not exist in our chainstate
+                    // This is expected for transactions spending unconfirmed inputs
+                }
+            }
+        }
+        
+        // Add outputs
+        for (size_t j = 0; j < tx.vout.size(); ++j) {
+            bool overwrite = false;
+            {
+                ScopedTimer timer(g_metrics_collector.stats_cache_have_coin);
+                overwrite = cache.HaveCoin(COutPoint(txid, j));
+            }
+            {
+                ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
+                cache.AddCoin(COutPoint(txid, j), Coin(tx.vout[j], nHeight, false), overwrite);
+            }
+        }
+    }
+}
+
+/**
  * Run the steady-state benchmark.
  */
 void RunSteadyStateBenchmark(CCoinsView& db_view) {
@@ -262,7 +372,34 @@ void RunSteadyStateBenchmark(CCoinsView& db_view) {
     // Create cache
     CCoinsViewCache cache(&db_view);
     
-    // TODO: Implement mempool replay
+    // Load mempool transactions
+    fs::path mempool_file = fs::u8path("benchmark/getrawmempool_full.json");
+    std::vector<CTransactionRef> transactions = LoadMempoolTransactions(mempool_file);
+    
+    if (transactions.empty()) {
+        std::cerr << "No transactions loaded. Steady-state benchmark skipped.\n";
+        std::cout << "Steady-state benchmark completed.\n";
+        return;
+    }
+    
+    // Process all transactions
+    auto start = std::chrono::high_resolution_clock::now();
+    ProcessMempoolTransactions(cache, transactions);
+    
+    // Final flush
+    {
+        ScopedTimer timer(g_metrics_collector.stats_cache_flush);
+        cache.Flush();
+    }
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(end - start).count();
+    
+    std::cout << "Processed " << transactions.size() << " mempool transactions in " 
+              << elapsed << " seconds\n";
+    if (elapsed > 0) {
+        std::cout << "Throughput: " << (transactions.size() / elapsed) << " tx/s\n";
+    }
     
     std::cout << "Steady-state benchmark completed.\n";
 }
