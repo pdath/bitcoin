@@ -45,7 +45,7 @@ CCoinsViewDB_LevelDB::CCoinsViewDB_LevelDB(const DBParams& db_params, const Coin
     m_options.block_cache = leveldb::NewLRUCache(m_cache_size / 2);  // Use half for block cache
     m_options.filter_policy = leveldb::NewBloomFilterPolicy(10);
     m_options.compression = leveldb::kNoCompression;
-    m_options.max_file_size = 32 * 1024 * 1024;  // 32MB
+    m_options.max_file_size = 64 * 1024 * 1024;  // 64MB - match Bitcoin Knots
 
     leveldb::Status status = leveldb::DB::Open(m_options, m_path, &m_db);
     assert(status.ok());

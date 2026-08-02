@@ -41,7 +41,7 @@ CCoinsViewDB_RocksDB::CCoinsViewDB_RocksDB(const DBParams& db_params, const Coin
     m_options.create_if_missing = true;
     m_options.write_buffer_size = 256 * 1024 * 1024;  // 256MB
     m_options.compression = rocksdb::kNoCompression;
-    m_options.target_file_size_base = 32 * 1024 * 1024;  // 32MB
+    m_options.target_file_size_base = 64 * 1024 * 1024;  // 64MB - match Bitcoin Knots
     
     rocksdb::Status status = rocksdb::DB::Open(m_options, m_path, &m_db);
     assert(status.ok());
