@@ -173,13 +173,10 @@ main()
 - LMDB implementation builds and runs (const_cast fixes applied)
 - CMake configuration with engine selection
 - Factory pattern for database creation
-- Basic benchmark infrastructure
-
-### ⚠️ Partial / Needs Work
-- Actual IBD workload (working with statistics)
-- Actual steady-state workload (uses getrawmempool_full.json with full transaction data)
-- Full metrics collection (implemented for both cache and DB layers)
-- Results export (includes all operation-level statistics in JSON)
+- IBD workload with full statistics collection
+- Steady-state workload (mempool replay from getrawmempool_full.json) with full statistics collection
+- Full metrics collection for both cache and DB layers
+- Results export with all operation-level statistics in JSON
 
 ---
 
@@ -222,9 +219,29 @@ if (hashBlock.IsNull()) {
 
 ---
 
-## 8. Next Steps
+## 8. Database Parameters
 
-1. Implement IBD block processing
-2. Implement mempool replay from getrawmempool_full.json
-3. Add full metrics collection
-4. Create results directory and JSON export
+All database implementations use parameters matching Bitcoin Knots production settings:
+
+### LevelDB
+- `max_file_size`: 64MB (matches Bitcoin Knots)
+- `write_buffer_size`: 64MB (matches Bitcoin Knots: nCacheSize/4 with 256MB cache)
+- `compression`: kNoCompression (matches Bitcoin Knots)
+- `block_cache`: 128MB (matches Bitcoin Knots: nCacheSize/2 with 256MB cache)
+- `filter_policy`: Bloom filter with 10 bits per key (matches Bitcoin Knots)
+
+### RocksDB
+- `target_file_size_base`: 64MB (matches Bitcoin Knots default)
+- `write_buffer_size`: 256MB (configured higher than LevelDB to prevent write stalling)
+- `compression`: kNoCompression (matches Bitcoin Knots)
+
+### LMDB
+- `mapsize`: Controlled by `cache_bytes` parameter (memory-mapped, no per-file size concept)
+
+## 9. Next Steps
+
+The database benchmark is now fully functional with:
+- IBD block processing with statistics
+- Mempool replay from getrawmempool_full.json with statistics
+- Full operation-level metrics collection
+- JSON results export
