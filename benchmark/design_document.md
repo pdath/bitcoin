@@ -296,7 +296,7 @@ bitcoin/
 >>>>>>> 129fcfca95 (Moved documenets to correct directory)
     ├── data/                       # Hardcoded storage directory for temporary benchmark databases
     │   ├── leveldb_chainstate/     # LevelDB benchmark database (~12GB)
-    │   ├── lmdb_chainstate/        # LMDB benchmark database (~12GB)
+    │   ├── lmdb_chainstate/        # LMDB benchmark database (~16GB)
     │   └── rocksdb_chainstate/     # RocksDB benchmark database (~12GB)
     ├── src/
     │   ├── main.cpp                # Benchmark CLI harness entry point

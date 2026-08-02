@@ -21,3 +21,6 @@ test/lint/test_runner/target/
 /guix-build-*
 
 /ci/scratch/
+
+# DB Benchmarking
+/benchmark/data/*

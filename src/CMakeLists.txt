@@ -475,6 +475,9 @@ if(BUILD_BENCH)
   add_subdirectory(bench)
 endif()
 
+# Database benchmark
+add_subdirectory(db_benchmark)
+
 if(BUILD_TESTS)
   add_subdirectory(test)
 endif()
