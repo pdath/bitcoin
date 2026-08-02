@@ -88,6 +88,7 @@ void BenchmarkMetricsCollector::PrintReport(const std::string& engine_name, doub
     print("DB Cursor", stats_db_cursor);
     print("DB GetBestBlock", stats_db_get_best_block);
     print("DB GetHeadBlocks", stats_db_get_head_blocks);
+    print("DB EstimateSize", stats_db_estimate_size);
     
     std::cout << "\n" << std::string(80, '=') << "\n";
 }
@@ -105,7 +106,29 @@ void BenchmarkMetricsCollector::ExportJSON(const std::string& filepath, const st
     out << "  \"peak_rss_bytes\": " << peak_rss_bytes << ",\n";
     out << "  \"user_cpu_seconds\": " << user_cpu_seconds << ",\n";
     out << "  \"system_cpu_seconds\": " << system_cpu_seconds << ",\n";
-    out << "  \"db_directory_size_bytes\": " << db_directory_size_bytes << "\n";
+    out << "  \"db_directory_size_bytes\": " << db_directory_size_bytes << ",\n";
+    
+    // Cache layer stats
+    out << "  \"cache_layer\": {\n";
+    out << "    \"access_coin\": {\"count\": " << stats_cache_access_coin.count << ", \"total_nsec\": " << stats_cache_access_coin.total_nsec << ", \"mean_usec\": " << stats_cache_access_coin.MeanTimeUsec() << "},\n";
+    out << "    \"get_coin\": {\"count\": " << stats_cache_get_coin.count << ", \"total_nsec\": " << stats_cache_get_coin.total_nsec << ", \"mean_usec\": " << stats_cache_get_coin.MeanTimeUsec() << "},\n";
+    out << "    \"have_coin\": {\"count\": " << stats_cache_have_coin.count << ", \"total_nsec\": " << stats_cache_have_coin.total_nsec << ", \"mean_usec\": " << stats_cache_have_coin.MeanTimeUsec() << "},\n";
+    out << "    \"have_coin_in_cache\": {\"count\": " << stats_cache_have_coin_in_cache.count << ", \"total_nsec\": " << stats_cache_have_coin_in_cache.total_nsec << ", \"mean_usec\": " << stats_cache_have_coin_in_cache.MeanTimeUsec() << "},\n";
+    out << "    \"add_coin\": {\"count\": " << stats_cache_add_coin.count << ", \"total_nsec\": " << stats_cache_add_coin.total_nsec << ", \"mean_usec\": " << stats_cache_add_coin.MeanTimeUsec() << "},\n";
+    out << "    \"spend_coin\": {\"count\": " << stats_cache_spend_coin.count << ", \"total_nsec\": " << stats_cache_spend_coin.total_nsec << ", \"mean_usec\": " << stats_cache_spend_coin.MeanTimeUsec() << "},\n";
+    out << "    \"flush\": {\"count\": " << stats_cache_flush.count << ", \"total_nsec\": " << stats_cache_flush.total_nsec << ", \"mean_usec\": " << stats_cache_flush.MeanTimeUsec() << "}\n";
+    out << "  },\n";
+    
+    // DB layer stats
+    out << "  \"db_layer\": {\n";
+    out << "    \"get_coin\": {\"count\": " << stats_db_get_coin.count << ", \"total_nsec\": " << stats_db_get_coin.total_nsec << ", \"mean_usec\": " << stats_db_get_coin.MeanTimeUsec() << "},\n";
+    out << "    \"have_coin\": {\"count\": " << stats_db_have_coin.count << ", \"total_nsec\": " << stats_db_have_coin.total_nsec << ", \"mean_usec\": " << stats_db_have_coin.MeanTimeUsec() << "},\n";
+    out << "    \"batch_write\": {\"count\": " << stats_db_batch_write.count << ", \"total_nsec\": " << stats_db_batch_write.total_nsec << ", \"mean_usec\": " << stats_db_batch_write.MeanTimeUsec() << "},\n";
+    out << "    \"cursor\": {\"count\": " << stats_db_cursor.count << ", \"total_nsec\": " << stats_db_cursor.total_nsec << ", \"mean_usec\": " << stats_db_cursor.MeanTimeUsec() << "},\n";
+    out << "    \"get_best_block\": {\"count\": " << stats_db_get_best_block.count << ", \"total_nsec\": " << stats_db_get_best_block.total_nsec << ", \"mean_usec\": " << stats_db_get_best_block.MeanTimeUsec() << "},\n";
+    out << "    \"get_head_blocks\": {\"count\": " << stats_db_get_head_blocks.count << ", \"total_nsec\": " << stats_db_get_head_blocks.total_nsec << ", \"mean_usec\": " << stats_db_get_head_blocks.MeanTimeUsec() << "},\n";
+    out << "    \"estimate_size\": {\"count\": " << stats_db_estimate_size.count << ", \"total_nsec\": " << stats_db_estimate_size.total_nsec << ", \"mean_usec\": " << stats_db_estimate_size.MeanTimeUsec() << "}\n";
+    out << "  }\n";
     out << "}\n";
 }
 

@@ -141,22 +141,47 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
                         const CTransaction& tx = *block.vtx[i];
                         bool is_coinbase = (i == 0);
                         int nHeight = 0; // We don't track height in this simple benchmark
+                        const Txid& txid = tx.GetHash();
                         
                         if (is_coinbase) {
-                            AddCoins(cache, tx, nHeight, true);
+                            // Instrumented version of AddCoins for coinbase
+                            for (size_t j = 0; j < tx.vout.size(); ++j) {
+                                // For coinbase, always allow overwrite
+                                {
+                                    ScopedTimer timer(g_metrics_collector.stats_cache_have_coin);
+                                    cache.HaveCoin(COutPoint(txid, j));
+                                }
+                                {
+                                    ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
+                                    cache.AddCoin(COutPoint(txid, j), Coin(tx.vout[j], nHeight, true), true);
+                                }
+                            }
                         } else {
                             // Spend inputs
                             for (const CTxIn& txin : tx.vin) {
                                 Coin coin;
-                                bool is_spent = cache.SpendCoin(txin.prevout, &coin);
-                                if (!is_spent) {
-                                    // In benchmark mode during initial sync, inputs might not exist yet
-                                    // This can happen with out-of-order blocks, but for a reindex
-                                    // starting from genesis, all inputs should exist
+                                {
+                                    ScopedTimer timer(g_metrics_collector.stats_cache_spend_coin);
+                                    bool is_spent = cache.SpendCoin(txin.prevout, &coin);
+                                    if (!is_spent) {
+                                        // In benchmark mode during initial sync, inputs might not exist yet
+                                        // This can happen with out-of-order blocks, but for a reindex
+                                        // starting from genesis, all inputs should exist
+                                    }
                                 }
                             }
                             // Add outputs
-                            AddCoins(cache, tx, nHeight, false);
+                            for (size_t j = 0; j < tx.vout.size(); ++j) {
+                                bool overwrite = false; // For non-coinbase, check if coin exists
+                                {
+                                    ScopedTimer timer(g_metrics_collector.stats_cache_have_coin);
+                                    overwrite = cache.HaveCoin(COutPoint(txid, j));
+                                }
+                                {
+                                    ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
+                                    cache.AddCoin(COutPoint(txid, j), Coin(tx.vout[j], nHeight, false), overwrite);
+                                }
+                            }
                         }
                     }
                     
@@ -165,7 +190,10 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
                     
                     // Flush cache periodically to avoid using too much memory
                     if (nBlocks % 1000 == 0) {
-                        cache.Flush();
+                        {
+                            ScopedTimer timer(g_metrics_collector.stats_cache_flush);
+                            cache.Flush();
+                        }
                         std::cout << "  Processed " << nBlocks << " blocks (" << nTotalBytes / 1024 / 1024 << " MB)...\n";
                     }
                 } catch (const std::exception& e) {
@@ -185,7 +213,10 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
     }
     
     // Final flush
-    cache.Flush();
+    {
+        ScopedTimer timer(g_metrics_collector.stats_cache_flush);
+        cache.Flush();
+    }
     
     auto nEnd = std::chrono::high_resolution_clock::now();
     double nSeconds = std::chrono::duration<double>(nEnd - nStart).count();
@@ -212,7 +243,11 @@ void RunIBDBenchmark(CCoinsView& db_view) {
     ProcessAllBlocks(cache, blocks_dir, xor_key);
     
     // Get final best block
-    uint256 best_block = db_view.GetBestBlock();
+    uint256 best_block;
+    {
+        ScopedTimer timer(g_metrics_collector.stats_db_get_best_block);
+        best_block = db_view.GetBestBlock();
+    }
     std::cout << "Best block: " << best_block.ToString() << "\n";
     
     std::cout << "IBD benchmark completed.\n";

@@ -14,6 +14,10 @@
 #include <cassert>
 #include <cstring>
 
+// Metrics collector
+#include <metrics_collector.hpp>
+extern BenchmarkMetricsCollector g_metrics_collector;
+
 // Key prefixes matching LevelDB schema
 static constexpr uint8_t DB_COIN = 'C';
 static constexpr uint8_t DB_BEST_BLOCK = 'B';
@@ -49,6 +53,7 @@ CCoinsViewDB_LMDB::~CCoinsViewDB_LMDB() {
 }
 
 std::optional<Coin> CCoinsViewDB_LMDB::GetCoin(const COutPoint& outpoint) const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_coin);
     MDB_txn* txn = nullptr;
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, MDB_RDONLY, &txn);
     assert(rc == MDB_SUCCESS);
@@ -80,6 +85,7 @@ std::optional<Coin> CCoinsViewDB_LMDB::GetCoin(const COutPoint& outpoint) const 
 }
 
 bool CCoinsViewDB_LMDB::HaveCoin(const COutPoint& outpoint) const {
+    ScopedTimer timer(g_metrics_collector.stats_db_have_coin);
     MDB_txn* txn = nullptr;
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, MDB_RDONLY, &txn);
     assert(rc == MDB_SUCCESS);
@@ -99,6 +105,7 @@ bool CCoinsViewDB_LMDB::HaveCoin(const COutPoint& outpoint) const {
 }
 
 uint256 CCoinsViewDB_LMDB::GetBestBlock() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_best_block);
     MDB_txn* txn = nullptr;
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, MDB_RDONLY, &txn);
     assert(rc == MDB_SUCCESS);
@@ -128,6 +135,7 @@ uint256 CCoinsViewDB_LMDB::GetBestBlock() const {
 }
 
 std::vector<uint256> CCoinsViewDB_LMDB::GetHeadBlocks() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_head_blocks);
     MDB_txn* txn = nullptr;
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, MDB_RDONLY, &txn);
     assert(rc == MDB_SUCCESS);
@@ -157,6 +165,7 @@ std::vector<uint256> CCoinsViewDB_LMDB::GetHeadBlocks() const {
 }
 
 bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashBlock) {
+    ScopedTimer timer(g_metrics_collector.stats_db_batch_write);
     MDB_txn* txn = nullptr;
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, 0, &txn);
     assert(rc == MDB_SUCCESS);
@@ -258,10 +267,12 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
 }
 
 std::unique_ptr<CCoinsViewCursor> CCoinsViewDB_LMDB::Cursor() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_cursor);
     return nullptr;  // TODO: Implement cursor for LMDB
 }
 
 size_t CCoinsViewDB_LMDB::EstimateSize() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_estimate_size);
     // TODO: Implement proper size estimation
     return 0;
 }

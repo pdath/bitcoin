@@ -17,6 +17,10 @@
 #include <cassert>
 #include <cstddef>
 
+// Metrics collector
+#include <metrics_collector.hpp>
+extern BenchmarkMetricsCollector g_metrics_collector;
+
 // Key prefixes matching Bitcoin Knots schema
 static constexpr uint8_t DB_COIN = 'C';
 static constexpr uint8_t DB_BEST_BLOCK = 'B';
@@ -54,6 +58,7 @@ CCoinsViewDB_LevelDB::~CCoinsViewDB_LevelDB() {
 }
 
 std::optional<Coin> CCoinsViewDB_LevelDB::GetCoin(const COutPoint& outpoint) const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_coin);
     CoinEntry entry(&outpoint);
     DataStream ssKey;
     ssKey << entry;
@@ -77,6 +82,7 @@ std::optional<Coin> CCoinsViewDB_LevelDB::GetCoin(const COutPoint& outpoint) con
 }
 
 bool CCoinsViewDB_LevelDB::HaveCoin(const COutPoint& outpoint) const {
+    ScopedTimer timer(g_metrics_collector.stats_db_have_coin);
     CoinEntry entry(&outpoint);
     DataStream ssKey;
     ssKey << entry;
@@ -87,6 +93,7 @@ bool CCoinsViewDB_LevelDB::HaveCoin(const COutPoint& outpoint) const {
 }
 
 uint256 CCoinsViewDB_LevelDB::GetBestBlock() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_best_block);
     std::string value;
     leveldb::Status status = m_db->Get(leveldb::ReadOptions(), std::string(1, DB_BEST_BLOCK), &value);
     
@@ -106,6 +113,7 @@ uint256 CCoinsViewDB_LevelDB::GetBestBlock() const {
 }
 
 std::vector<uint256> CCoinsViewDB_LevelDB::GetHeadBlocks() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_head_blocks);
     std::string value;
     leveldb::Status status = m_db->Get(leveldb::ReadOptions(), std::string(1, DB_HEAD_BLOCKS), &value);
     
@@ -125,6 +133,7 @@ std::vector<uint256> CCoinsViewDB_LevelDB::GetHeadBlocks() const {
 }
 
 bool CCoinsViewDB_LevelDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashBlock) {
+    ScopedTimer timer(g_metrics_collector.stats_db_batch_write);
     leveldb::WriteBatch batch;
 
     if (!hashBlock.IsNull()) {
@@ -182,10 +191,12 @@ bool CCoinsViewDB_LevelDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint25
 }
 
 std::unique_ptr<CCoinsViewCursor> CCoinsViewDB_LevelDB::Cursor() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_cursor);
     return nullptr;  // TODO: Implement cursor for LevelDB
 }
 
 size_t CCoinsViewDB_LevelDB::EstimateSize() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_estimate_size);
     uint64_t size_val;
     leveldb::Range range(std::string(1, DB_COIN), std::string(1, DB_COIN + 1));
     m_db->GetApproximateSizes(&range, 1, &size_val);

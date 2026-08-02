@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <chrono>
 
 // Hardcoded cache size
 #define BENCH_CACHE_MB 256
@@ -54,6 +55,26 @@ struct OperationStats {
 };
 
 /**
+ * RAII-based scoped timer for automatic operation timing.
+ * Usage: ScopedTimer timer(stats, "operation_name");
+ */
+class ScopedTimer {
+public:
+    ScopedTimer(OperationStats& stats, const std::string& op_name = "") 
+        : m_stats(stats), m_start(std::chrono::high_resolution_clock::now()) {}
+    ~ScopedTimer() {
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - m_start).count();
+        m_stats.Record(static_cast<uint64_t>(duration));
+    }
+    ScopedTimer(const ScopedTimer&) = delete;
+    ScopedTimer& operator=(const ScopedTimer&) = delete;
+private:
+    OperationStats& m_stats;
+    std::chrono::high_resolution_clock::time_point m_start;
+};
+
+/**
  * Metrics collector for benchmark.
  */
 class BenchmarkMetricsCollector {
@@ -74,6 +95,7 @@ public:
     OperationStats stats_db_cursor;
     OperationStats stats_db_get_best_block;
     OperationStats stats_db_get_head_blocks;
+    OperationStats stats_db_estimate_size;
 
     // System metrics
     size_t peak_rss_bytes{0};

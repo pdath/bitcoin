@@ -15,6 +15,10 @@
 
 #include <cassert>
 
+// Metrics collector
+#include <metrics_collector.hpp>
+extern BenchmarkMetricsCollector g_metrics_collector;
+
 // Key prefixes matching LevelDB schema
 static constexpr uint8_t DB_COIN = 'C';
 static constexpr uint8_t DB_BEST_BLOCK = 'B';
@@ -50,6 +54,7 @@ CCoinsViewDB_RocksDB::~CCoinsViewDB_RocksDB() {
 }
 
 std::optional<Coin> CCoinsViewDB_RocksDB::GetCoin(const COutPoint& outpoint) const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_coin);
     CoinEntry entry(&outpoint);
     DataStream ssKey;
     ssKey << entry;
@@ -73,6 +78,7 @@ std::optional<Coin> CCoinsViewDB_RocksDB::GetCoin(const COutPoint& outpoint) con
 }
 
 bool CCoinsViewDB_RocksDB::HaveCoin(const COutPoint& outpoint) const {
+    ScopedTimer timer(g_metrics_collector.stats_db_have_coin);
     CoinEntry entry(&outpoint);
     DataStream ssKey;
     ssKey << entry;
@@ -83,6 +89,7 @@ bool CCoinsViewDB_RocksDB::HaveCoin(const COutPoint& outpoint) const {
 }
 
 uint256 CCoinsViewDB_RocksDB::GetBestBlock() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_best_block);
     std::string value;
     rocksdb::Status status = m_db->Get(rocksdb::ReadOptions(), std::string(1, DB_BEST_BLOCK), &value);
     
@@ -102,6 +109,7 @@ uint256 CCoinsViewDB_RocksDB::GetBestBlock() const {
 }
 
 std::vector<uint256> CCoinsViewDB_RocksDB::GetHeadBlocks() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_get_head_blocks);
     std::string value;
     rocksdb::Status status = m_db->Get(rocksdb::ReadOptions(), std::string(1, DB_HEAD_BLOCKS), &value);
     
@@ -121,6 +129,7 @@ std::vector<uint256> CCoinsViewDB_RocksDB::GetHeadBlocks() const {
 }
 
 bool CCoinsViewDB_RocksDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashBlock) {
+    ScopedTimer timer(g_metrics_collector.stats_db_batch_write);
     rocksdb::WriteBatch batch;
 
     if (!hashBlock.IsNull()) {
@@ -178,10 +187,12 @@ bool CCoinsViewDB_RocksDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint25
 }
 
 std::unique_ptr<CCoinsViewCursor> CCoinsViewDB_RocksDB::Cursor() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_cursor);
     return nullptr;  // TODO: Implement cursor for RocksDB
 }
 
 size_t CCoinsViewDB_RocksDB::EstimateSize() const {
+    ScopedTimer timer(g_metrics_collector.stats_db_estimate_size);
     size_t size = 0;
     rocksdb::Range range(std::string(1, DB_COIN), std::string(1, DB_COIN + 1));
     m_db->GetApproximateSizes(&range, 1, &size);
