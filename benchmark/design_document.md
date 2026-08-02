@@ -142,7 +142,11 @@ public:
   - **Block Cache Allocation**: `m_table_options.block_cache = rocksdb::NewLRUCache(nCacheSize / 2)` (allocates 50% of db cache to block cache, matching LevelDB).
   - **Bloom Filter Policy**: `m_table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10))` (10 bits per key, matching LevelDB).
   - **Compression**: `m_options.compression = rocksdb::kNoCompression` (disabled compression for maximum raw throughput, matching LevelDB).
+<<<<<<< HEAD
   - **Max File Size**: `m_options.target_file_size_base = 2 * 1024 * 1024` (2MB target file size, matching `DBWRAPPER_MAX_FILE_SIZE`).
+=======
+  - **Max File Size**: `m_options.target_file_size_base = 32 * 1024 * 1024` (2MB target file size, matching `DBWRAPPER_MAX_FILE_SIZE`).
+>>>>>>> 129fcfca95 (Moved documenets to correct directory)
   - **Auto Creation**: `m_options.create_if_missing = true`.
 - **RocksDB Write Mechanics**:
   - `GetCoin()` / `HaveCoin()`: Calls `m_db->Get(read_options, key, &value_str)`.
@@ -185,7 +189,11 @@ To ensure parity across all candidate database engines, prototype wrappers use a
   1. **Cache Warm-Up Phase**:
      - Pre-loads `CCoinsViewCache` (configured via `#define BENCH_CACHE_MB 256`) by querying random UTXOs using `AccessCoin()` / `GetCoin()` to reach target cache fill ratio.
   2. **Execution Phase**:
+<<<<<<< HEAD
      - Replays a trace of real mempool transactions (e.g. captured via `bitcoin-cli getrawmempool`).
+=======
+     - Replays a trace of real mempool transactions (e.g. captured via `bitcoin-cli getrawmempool`), stored in a hard coded file called `getrawmempool.json`
+>>>>>>> 129fcfca95 (Moved documenets to correct directory)
      - **Read & Lookup Operations**:
        - `AccessCoin()`: Direct reference lookup in cache or disk fallback.
        - `GetCoin()`: Retrieves `std::optional<Coin>`.
@@ -282,6 +290,10 @@ bitcoin/
     ├── requirements_document.md    # Requirements specification
     ├── design_document.md          # Technical design specification (this document)
     ├── CMakeLists.txt              # CMake build configuration for benchmark runner
+<<<<<<< HEAD
+=======
+    ├── getrawmempool.json          # Output of "bitcoin-cli getrawmempool"
+>>>>>>> 129fcfca95 (Moved documenets to correct directory)
     ├── data/                       # Hardcoded storage directory for temporary benchmark databases
     │   ├── leveldb_chainstate/     # LevelDB benchmark database (~12GB)
     │   ├── lmdb_chainstate/        # LMDB benchmark database (~12GB)
@@ -339,5 +351,10 @@ To assist future developers and AI coding agents implementing this benchmark sui
 - [coins.h](../src/coins.h): `CCoinsView`, `CCoinsViewBacked`, and `CCoinsViewCache` base class interfaces and memory cache management logic.
 
 ### Candidate Embedded Database Engine Repositories
+<<<<<<< HEAD
 - **LMDB**: [LMDB GitHub Repository](https://github.com/LMDB/lmdb/tree/mdb.master3/libraries/liblmdb)
 - **RocksDB**: [RocksDB GitHub Repository](https://github.com/facebook/rocksdb/)
+=======
+- **LMDB**: [LMDB GitHub Repository](https://github.com/LMDB/lmdb/tree/mdb.master3/libraries/liblmdb), installed on the system via liblmdb-dev package.
+- **RocksDB**: [RocksDB GitHub Repository](https://github.com/facebook/rocksdb/), installed on the system via the librocksdb-dev package.
+>>>>>>> 129fcfca95 (Moved documenets to correct directory)
