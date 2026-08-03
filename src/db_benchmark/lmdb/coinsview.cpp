@@ -2,6 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 
+// Debug flag - uncomment to enable debug output
+// #define DEBUG 1
+
 #include <lmdb/coinsview.hpp>
 
 #include <serialize.h>
@@ -26,6 +29,10 @@ static constexpr uint8_t DB_HEAD_BLOCKS = 'H';
 CCoinsViewDB_LMDB::CCoinsViewDB_LMDB(const DBParams& db_params, const CoinsViewOptions& options)
     : m_path(PathToString(db_params.path)), m_map_size(db_params.cache_bytes) {
     
+#ifdef DEBUG
+    std::cerr << "DBG: Opening LMDB at " << m_path << "\n";
+#endif
+    
     int rc = mdb_env_create(&m_env);
     assert(rc == MDB_SUCCESS);
     
@@ -43,6 +50,12 @@ CCoinsViewDB_LMDB::CCoinsViewDB_LMDB(const DBParams& db_params, const CoinsViewO
     assert(rc == MDB_SUCCESS);
     
     mdb_txn_commit(txn);
+    
+    // Check if database is empty
+    uint256 best_block = GetBestBlock();
+#ifdef DEBUG
+    std::cerr << "DBG: LMDB opened, GetBestBlock()=" << best_block.ToString() << " isNull=" << best_block.IsNull() << "\n";
+#endif
 }
 
 CCoinsViewDB_LMDB::~CCoinsViewDB_LMDB() {
@@ -284,6 +297,25 @@ std::unique_ptr<CCoinsView> CreateLMDBView(const std::string& db_path, size_t ca
     db_params.memory_only = false;
     db_params.wipe_data = true;
     db_params.obfuscate = false;
+
+    // Wipe the database if requested (matches Bitcoin Knots behavior)
+    if (db_params.wipe_data) {
+#ifdef DEBUG
+        std::cerr << "DBG: Wiping LMDB database at " << db_path << "\n";
+#endif
+        fs::path db_path_fs = fs::u8path(db_path);
+        if (fs::exists(db_path_fs)) {
+            // For LMDB, we need to remove the directory and its contents
+            bool removed = fs::remove_all(db_path_fs);
+#ifdef DEBUG
+            std::cerr << "DBG: LMDB remove_all result: " << removed << "\n";
+#endif
+        } else {
+#ifdef DEBUG
+            std::cerr << "DBG: LMDB database directory does not exist\n";
+#endif
+        }
+    }
 
     CoinsViewOptions options;
     options.batch_write_bytes = 64 * 1024 * 1024;

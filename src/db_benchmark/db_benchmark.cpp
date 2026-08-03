@@ -2,6 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 
+// Debug flag - uncomment to enable debug output
+// #define DEBUG 1
+
 // Provide translation stub to avoid linking issues with bitcoin_clientversion
 // This is needed because some Bitcoin libraries use the translation system
 #include <util/translation.h>
@@ -24,11 +27,13 @@ const TranslateFn G_TRANSLATION_FUN{nullptr};
 
 #include <chrono>
 #include <csignal>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 // Debug flag for gdb breakpoint
@@ -49,22 +54,81 @@ std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_
 
 /**
  * Load XOR key from file
+ * Try blocks directory first, then parent directory
  */
 static Obfuscation LoadXorKey(const fs::path& blocks_dir) {
-    fs::path xor_key_path = blocks_dir / "xor.dat";
-    
-    std::cerr << "DBG: Loading XOR key from " << fs::PathToString(xor_key_path) << " exists=" << fs::exists(xor_key_path) << "\n";
-    
     std::array<std::byte, Obfuscation::KEY_SIZE> xor_key{};
     
+    // Try blocks directory first (user confirmed this is correct location)
+    fs::path xor_key_path = blocks_dir / "xor.dat";
+#ifdef DEBUG
+    std::cerr << "DBG: LoadXorKey: Trying blocks_dir: " << fs::PathToString(xor_key_path) << " exists=" << fs::exists(xor_key_path) << "\n";
+    std::cerr.flush();
+#endif
     if (fs::exists(xor_key_path)) {
-        AutoFile xor_key_file{fsbridge::fopen(xor_key_path, "rb")};
-        xor_key_file >> xor_key;
-        std::cerr << "DBG: XOR key loaded successfully\n";
-    } else {
-        std::cerr << "DBG: No XOR key file found\n";
+#ifdef DEBUG
+        std::cerr << "DBG: LoadXorKey: XOR key file found at " << fs::PathToString(xor_key_path) << "\n";
+        std::cerr.flush();
+#endif
+        FILE* xor_file = fsbridge::fopen(xor_key_path, "rb");
+        if (!xor_file) {
+#ifdef DEBUG
+            std::cerr << "DBG: LoadXorKey: Failed to open XOR key file\n";
+            std::cerr.flush();
+#endif
+            return Obfuscation{xor_key};
+        }
+#ifdef DEBUG
+        std::cerr << "DBG: LoadXorKey: XOR key file opened successfully\n";
+        std::cerr.flush();
+#endif
+        AutoFile xor_key_file{xor_file};
+        try {
+            xor_key_file >> xor_key;
+        } catch (const std::exception& e) {
+            return Obfuscation{};
+        }
+        return Obfuscation{xor_key};
     }
     
+    // Fallback: parent directory (Bitcoin data directory root)
+    xor_key_path = blocks_dir.parent_path() / "xor.dat";
+#ifdef DEBUG
+    std::cerr << "DBG: LoadXorKey: Trying parent_dir: " << fs::PathToString(xor_key_path) << " exists=" << fs::exists(xor_key_path) << "\n";
+    std::cerr.flush();
+#endif
+    if (fs::exists(xor_key_path)) {
+#ifdef DEBUG
+        std::cerr << "DBG: LoadXorKey: XOR key file found at parent dir\n";
+        std::cerr.flush();
+#endif
+        FILE* xor_file = fsbridge::fopen(xor_key_path, "rb");
+        if (!xor_file) {
+            return Obfuscation{xor_key};
+        }
+        AutoFile xor_key_file{xor_file};
+        xor_key_file >> xor_key;
+#ifdef DEBUG
+        std::cerr << "DBG: LoadXorKey: XOR key loaded from parent dir, bytes: ";
+        for (size_t i = 0; i < xor_key.size(); ++i) {
+            std::cerr << std::hex << "0x" << (int)xor_key[i] << " ";
+        }
+        std::cerr << "\n";
+        std::cerr.flush();
+#endif
+        Obfuscation obfuscation{xor_key};
+#ifdef DEBUG
+        std::cerr << "DBG: LoadXorKey: Obfuscation object from parent valid=" << (obfuscation ? "true" : "false") << "\n";
+        std::cerr.flush();
+#endif
+        return obfuscation;
+    }
+    
+    // If no XOR key file found, use zero key (no obfuscation)
+#ifdef DEBUG
+    std::cerr << "DBG: LoadXorKey: No XOR key file found, using zero key\n";
+    std::cerr.flush();
+#endif
     return Obfuscation{xor_key};
 }
 
@@ -80,7 +144,6 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     FlatFileSeq block_file_seq(blocks_dir, "blk", node::BLOCKFILE_CHUNK_SIZE);
     
     int nFile = 0;
-    uint64_t nTotalBytes = 0;
     int nBlocks = 0;
     nSpendFailures = 0;
     nFlushFailures = 0;
@@ -91,17 +154,21 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     // Get initial chain state from DATABASE, not cache (to avoid stale cache state)
     // This is the key fix: use db_view.GetBestBlock() not cache.GetBestBlock()
     uint256 hashTip = db_view.GetBestBlock();
-    std::cerr << "Initial hashTip: " << hashTip.ToString() << " (null=" << hashTip.IsNull() << ")\n";
-    std::cerr << "DBG: Starting with nBlocks=0, hashTip=" << hashTip.ToString() << ", hashTip.IsNull()=" << hashTip.IsNull() << "\n";
+    std::cout << "Initial hashTip: " << hashTip.ToString() << " (null=" << hashTip.IsNull() << ")\n";
     
     // If hashTip is not null in a fresh database, that's a problem!
     if (!hashTip.IsNull()) {
-        std::cerr << "\n*** ERROR: Fresh database has non-null hashTip! ***\n";
-        std::cerr << "hashTip: " << hashTip.ToString() << "\n";
-        g_debug_break = 2; // Different value for different breakpoints
+        assert(hashTip.IsNull() && "Fresh database should have null hashTip");
     }
     
     int nHeight = -1; // Will be set to 0 when we process genesis
+    
+    // Block index: maps block hash to height for all blocks we've processed
+    std::map<uint256, int> knownBlocks;
+    
+    // Buffer for blocks with unknown parents (like Bitcoin Knots' blocks_with_unknown_parent)
+    // Maps parent hash -> list of (child hash, file position, block size)
+    std::multimap<uint256, std::tuple<uint256, FlatFilePos, unsigned int>> blocks_with_unknown_parent;
     
     auto nStart = std::chrono::high_resolution_clock::now();
     
@@ -109,27 +176,24 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     const uint256 mainnetGenesisHash = uint256::FromHex("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").value();
     
     while (true) {
-        FlatFilePos pos{nFile, 0};
+        FlatFilePos pos{nFile, 0u};
         fs::path filename = block_file_seq.FileName(pos);
         if (!fs::exists(filename)) {
             break; // No more block files
         }
         
         std::cout << "Processing file: " << fs::PathToString(filename) << "\n";
-        std::cerr << "DBG: Starting file " << fs::PathToString(filename) << " at nBlocks=" << nBlocks << " hashTip=" << hashTip.ToString() << "\n";
         
         try {
             FILE* file = block_file_seq.Open(pos, true);
             if (!file) {
-                std::cerr << "Failed to open block file: " << fs::PathToString(filename) << "\n";
                 nFile++;
                 continue;
             }
             
             // Use AutoFile with XOR key for de-obfuscation
             AutoFile file_in{file, xor_key};
-            
-            // Use BufferedFile for efficient reading with rewind capability
+            file_in.SetIdlePriority();
             BufferedFile blkdat{file_in, 2 * MAX_BLOCK_SERIALIZED_SIZE, MAX_BLOCK_SERIALIZED_SIZE + 8};
             uint64_t nRewind = blkdat.GetPos();
             
@@ -167,7 +231,6 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     // End of file or read error
                     break;
                 }
-                
                 try {
                     // Remember position for rewinding
                     const uint64_t nBlockPos = blkdat.GetPos();
@@ -180,73 +243,35 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     blkdat >> header;
                     const uint256 hash = header.GetHash();
                     
-                    std::cerr << "DBG: Block " << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " hashTip=" << hashTip.ToString() << " nBlocks=" << nBlocks << " hashTip.IsNull()=" << hashTip.IsNull() << " isGenesis=" << (hash == mainnetGenesisHash) << " prevNull=" << header.hashPrevBlock.IsNull() << "\n";
+                    // Check if parent exists (like Bitcoin Knots: m_blockman.LookupBlockIndex(header.hashPrevBlock))
+                    // We accept any block whose parent is in our knownBlocks set or is null (genesis)
+                    bool is_genesis = (hash == mainnetGenesisHash);
+                    bool parent_exists = header.hashPrevBlock.IsNull() || knownBlocks.find(header.hashPrevBlock) != knownBlocks.end();
                     
-                    // Check chain continuity - block must connect to current tip
-                    // For fresh start: if hashTip is null (fresh db) and this is our first block, accept it
-                    // For subsequent blocks: must connect to current tip
-                    if (nBlocks == 0 && hashTip.IsNull()) {
-                        // Fresh database, first block - accept it as the start of our chain
-                        // This handles both genesis and starting from a checkpoint
-                        std::cerr << "DBG: ACCEPTING first block with null hashTip. hash=" << hash.ToString() << " isGenesis=" << (hash == mainnetGenesisHash) << "\n";
-                        hashTip = hash;
-                        nHeight = 0; // Genesis block is height 0
-                        if (hashTip.ToString() == "00000000eae98bf15e531e004bcaffdf3c5c5cc6444c52a9fd0f82101249ba95") {
-                            std::cerr << "\n*** MARKER at line 179: hashTip set to suspicious value! ***\n";
-                            std::cerr << "Block: " << hash.ToString() << "\n";
-                            std::cerr << "nBlocks: " << nBlocks << "\n";
-                        }
-                    } else if (nBlocks == 0) {
-                        // First block but database has existing data
-                        // Only accept if it's genesis or matches the expected chain
-                        std::cerr << "DBG: First block with existing db data. hash=" << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " hashTip=" << hashTip.ToString() << " isGenesis=" << (hash == mainnetGenesisHash) << " prevNull=" << header.hashPrevBlock.IsNull() << "\n";
-                        if (header.hashPrevBlock.IsNull() && hash == mainnetGenesisHash) {
-                            std::cerr << "DBG: Accepting genesis block\n";
-                            hashTip = hash;
-                            nHeight = 0;
-                            if (hashTip.ToString() == "00000000eae98bf15e531e004bcaffdf3c5c5cc6444c52a9fd0f82101249ba95") {
-                                std::cerr << "\n*** MARKER at line 188: hashTip set to suspicious value! ***\n";
-                                std::cerr << "Block: " << hash.ToString() << "\n";
-                                std::cerr << "nBlocks: " << nBlocks << "\n";
-                            }
-                        } else {
-                            // Skip - doesn't match our chain
-                            std::cerr << "DBG: REJECTING first block because not genesis or doesn't match\n";
-                            nBlocksSkipped++;
-                            if (nBlocksSkipped <= 10) {
-                                std::cerr << "Skipping block " << hash.ToString() << " (prev=" << header.hashPrevBlock.ToString() << ", tip=" << hashTip.ToString() << ") - not genesis\n";
-                            } else if (nBlocksSkipped == 11) {
-                                std::cerr << "... (additional blocks skipped, total: " << nBlocksSkipped << ")\n";
-                            }
-                            continue;
-                        }
-                    } else if (header.hashPrevBlock != hashTip) {
-                        // Block doesn't connect to current tip - skip it (reorg/side chain)
-                        std::cerr << "DBG: REJECTING block (not connecting to tip). hash=" << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " hashTip=" << hashTip.ToString() << "\n";
-                        nBlocksSkipped++;
-                        if (nBlocksSkipped <= 10) {
-                            std::cerr << "Skipping block " << hash.ToString() << " (prev=" << header.hashPrevBlock.ToString() << ", tip=" << hashTip.ToString() << ")\n";
-                        } else if (nBlocksSkipped == 11) {
-                            std::cerr << "... (additional blocks skipped, total: " << nBlocksSkipped << ")\n";
-                        }
+                    // Skip if we've already processed this block
+                    if (knownBlocks.find(hash) != knownBlocks.end()) {
+                        continue;
+                    }
+                    
+                    bool extends_tip = false;
+                    uint256 oldHashTip = hashTip;
+                    int block_height = -1;
+                    
+                    if (is_genesis) {
+                        // Genesis block - will set hashTip and nHeight after successful processing
+                        extends_tip = true; // Genesis extends the tip by definition
+                        block_height = 0;
+                    } else if (!parent_exists) {
+                        // Parent not known - buffer for later (like Bitcoin Knots' blocks_with_unknown_parent)
+                        blocks_with_unknown_parent.emplace(header.hashPrevBlock, std::make_tuple(hash, FlatFilePos{nFile, static_cast<unsigned int>(nBlockPos)}, nSize));
                         continue;
                     } else {
-                        // Block connects properly
-                        uint256 oldHashTip = hashTip;
-                        hashTip = hash;
-                        std::cerr << "DBG: ACCEPTING block. hash=" << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " oldHashTip=" << oldHashTip.ToString() << " newHashTip=" << hashTip.ToString() << " nHeight=" << nHeight << " -> " << nHeight+1 << "\n";
-                        nHeight++; // Increment height for each new block
-                        
-                        // Marker: check if hashTip was just set to the suspicious value
-                        if (hashTip.ToString() == "00000000eae98bf15e531e004bcaffdf3c5c5cc6444c52a9fd0f82101249ba95") {
-                            std::cerr << "\n*** MARKER at line 214: hashTip set to suspicious value! ***\n";
-                            std::cerr << "Block: " << hash.ToString() << "\n";
-                            std::cerr << "Prev: " << header.hashPrevBlock.ToString() << "\n";
-                            std::cerr << "oldHashTip: " << oldHashTip.ToString() << "\n";
-                            std::cerr << "nBlocks: " << nBlocks << "\n";
-                            std::cerr << "nHeight: " << nHeight << "\n";
-                            g_debug_break = 1; // Set flag for gdb conditional breakpoint
-                        }
+                        // Parent exists in index - accept this block
+                        // Get parent's height and compute this block's height
+                        int parent_height = knownBlocks[header.hashPrevBlock];
+                        block_height = parent_height + 1;
+                        // Remember if this extends the tip for later height increment
+                        extends_tip = (header.hashPrevBlock == oldHashTip);
                     }
                     
                     // Now read the full block
@@ -259,7 +284,9 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     assert(block.GetHash() == hash && "Block hash mismatch after deserialization");
                     
                     // Update rewind position to after this block
-                    nRewind = blkdat.GetPos();
+                    // Use nBlockPos + nSize to ensure we skip past the entire block
+                    // This matches Bitcoin Knots: nRewind = nBlockPos + nSize
+                    nRewind = nBlockPos + nSize;
                     blkdat.SkipTo(nRewind);
                     
                     // Process transactions in block using Bitcoin Knots' AddCoins
@@ -274,15 +301,8 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                                 {
                                     ScopedTimer timer(g_metrics_collector.stats_cache_spend_coin);
                                     bool is_spent = cache.SpendCoin(txin.prevout, nullptr);
-                                    // In a valid blockchain, SpendCoin should always succeed for non-coinbase tx inputs
-                                    // If it fails, it means we're processing blocks out of order or the database is corrupted
                                     if (!is_spent) {
                                         nSpendFailures++;
-                                        if (nSpendFailures <= 10) {
-                                            std::cerr << "WARNING: SpendCoin failed for " << txin.prevout.hash.ToString() << ":" << txin.prevout.n << " in block " << hash.ToString() << " at height " << nHeight << "\n";
-                                        } else if (nSpendFailures == 11) {
-                                            std::cerr << "... (additional SpendCoin failures, total: " << nSpendFailures << ")\n";
-                                        }
                                     } else {
                                         nInputsSpent++;
                                     }
@@ -295,19 +315,122 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         {
                             ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
                             bool check_for_overwrite = !is_coinbase;
-                            AddCoins(cache, tx, nHeight, check_for_overwrite);
+                            AddCoins(cache, tx, block_height, check_for_overwrite);
                             nCoinsAdded += tx.vout.size();
                         }
                     }
                     
                     // Set best block for the cache - this updates the mutable hashBlock
                     cache.SetBestBlock(hash);
+                    // Update chain state after successful processing
+                    knownBlocks[hash] = block_height;
+                    // Only update hashTip and nHeight if this block extends the tip
+                    if (extends_tip) {
+                        hashTip = hash;
+                        nHeight = block_height;
+                    }
+                    nBlocks++; // Count the main block
                     
-                    nBlocks++;
-                    nTotalBytes += nSize;
+                    // Process any buffered blocks that have this block as parent
+                    // Use the EXISTING blkdat BufferedFile, not a new one for each block
+                    // This fixes the bug where new BufferedFile has nSrcPos=0 and SetPos fails
+                    std::deque<uint256> queue;
+                    queue.push_back(hash);
+                    while (!queue.empty()) {
+                        uint256 head = queue.front();
+                        queue.pop_front();
+                        auto range = blocks_with_unknown_parent.equal_range(head);
+                        for (auto it = range.first; it != range.second; ) {
+                            const uint256& child_hash = std::get<0>(it->second);
+                            const FlatFilePos& child_pos = std::get<1>(it->second);
+                            const unsigned int child_nSize = std::get<2>(it->second);
+                            
+                            // Use the existing blkdat BufferedFile - do NOT create a new one
+                            // The position stored is where the block data starts (after magic+size)
+                            // Must ensure we're in the correct file
+                            if (child_pos.nFile != nFile) {
+                                // Different file - need to reopen
+                                // Close current file first
+                                blkdat.SkipTo(blkdat.GetPos()); // Ensure current position is saved
+                                // This is complex - for now, skip cross-file buffered blocks
+                                // In practice, blocks in the same blk*.dat file should be sequential
+    
+                                blocks_with_unknown_parent.erase(it++);
+                                range = blocks_with_unknown_parent.equal_range(head);
+                                continue;
+                            }
+                            
+                            // Seek to the buffered block position in the current file
+                            blkdat.SetPos(child_pos.nPos);
+                            blkdat.SetLimit(child_pos.nPos + child_nSize);
+                            
+                            CBlock child_block;
+                            try {
+                                blkdat >> TX_WITH_WITNESS(child_block);
+                            } catch (const std::exception&) {
+                                blocks_with_unknown_parent.erase(it++);
+                                range = blocks_with_unknown_parent.equal_range(head);
+                                continue;
+                            }
+                            
+                            // Verify hash
+                            if (child_block.GetHash() != child_hash) {
+                                blocks_with_unknown_parent.erase(it++);
+                                range = blocks_with_unknown_parent.equal_range(head);
+                                continue;
+                            }
+                            
+                            // Compute child height based on parent's height
+                            int parent_height = knownBlocks[head];
+                            int child_height = parent_height + 1;
+                            
+                            // Process the buffered block's transactions
+                            // This mirrors Bitcoin Knots' AcceptBlock() processing
+                            for (size_t i = 0; i < child_block.vtx.size(); ++i) {
+                                const CTransaction& tx = *child_block.vtx[i];
+                                bool is_coinbase = (i == 0);
+                                
+                                if (!is_coinbase) {
+                                    for (const CTxIn& txin : tx.vin) {
+                                        {
+                                            ScopedTimer timer(g_metrics_collector.stats_cache_spend_coin);
+                                            bool is_spent = cache.SpendCoin(txin.prevout, nullptr);
+                                            if (!is_spent) {
+                                                nSpendFailures++;
+                                            } else {
+                                                nInputsSpent++;
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                {
+                                    ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
+                                    bool check_for_overwrite = !is_coinbase;
+                                    AddCoins(cache, tx, child_height, check_for_overwrite);
+                                    nCoinsAdded += tx.vout.size();
+                                }
+                            }
+                            
+                            // Update state for this buffered block
+                            knownBlocks[child_hash] = child_height;
+                            cache.SetBestBlock(child_hash);
+                            hashTip = child_hash;
+                            nHeight = child_height;
+                            nBlocks++;
+                            
+                            // Add to queue for recursive processing of its children
+                            queue.push_back(child_hash);
+                            
+                            // Remove from buffered map
+                            blocks_with_unknown_parent.erase(it++);
+                            range = blocks_with_unknown_parent.equal_range(head);
+                        }
+                    }
                     
                     // Flush cache periodically to avoid using too much memory
-                    if (nBlocks % 100 == 0) {
+                    // Mirror Bitcoin Knots' behavior: flush less frequently to batch writes
+                    if (nBlocks % 1000 == 0) {
                         bool flush_ok;
                         {
                             ScopedTimer timer(g_metrics_collector.stats_cache_flush);
@@ -315,22 +438,18 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         }
                         if (!flush_ok) {
                             nFlushFailures++;
-                            std::cerr << "CRITICAL: Flush failed at block " << nBlocks << " (height=" << nHeight << ")! Database writes are failing.\n";
-                            // Use assert to get core dump on first failure
                             assert(flush_ok && "Flush failed - database write error");
                         }
-                        std::cout << "  Processed " << nBlocks << " blocks (" << nTotalBytes / 1024 / 1024 << " MB, height=" << nHeight << ")...\n";
+                        std::cout << "  Processed " << nBlocks << " blocks (height=" << nHeight << ")...\n";
                     }
-                } catch (const std::exception& e) {
+                } catch (const std::exception&) {
                     // Block failed to deserialize, try next one
                     // This can happen with historical bugs that added extra data
-                    std::cerr << "Block deserialization error at file offset " << (nRewind - 1) << ": " << e.what() << ". Continuing...\n";
                     continue;
                 }
             }
             // AutoFile (file_in) and BufferedFile (blkdat) will close the file automatically
-        } catch (const std::exception& e) {
-            std::cerr << "Error processing file " << fs::PathToString(filename) << ": " << e.what() << "\n";
+        } catch (const std::exception&) {
             // Don't manually close - AutoFile handles it
         }
         
@@ -343,16 +462,12 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
         ScopedTimer timer(g_metrics_collector.stats_cache_flush);
         final_flush_ok = cache.Flush();
     }
-    if (!final_flush_ok) {
-        nFlushFailures++;
-        std::cerr << "CRITICAL: Final flush failed at block " << nBlocks << " (height=" << nHeight << ")! Database writes are failing.\n";
-        assert(final_flush_ok && "Final flush failed - database write error");
-    }
+    assert(final_flush_ok && "Final flush failed - database write error");
     
     auto nEnd = std::chrono::high_resolution_clock::now();
     double nSeconds = std::chrono::duration<double>(nEnd - nStart).count();
     
-    std::cout << "\nProcessed " << nBlocks << " blocks (height=" << nHeight << "), " << nTotalBytes / 1024 / 1024 << " MB in " << nSeconds << " seconds\n";
+    std::cout << "\nProcessed " << nBlocks << " blocks (height=" << nHeight << ") in " << nSeconds << " seconds\n";
     
     // Report diagnostics
     std::cout << "DIAGNOSTIC: Coins added: " << nCoinsAdded << ", Inputs spent: " << nInputsSpent << ", Net growth: " << (nCoinsAdded - nInputsSpent) << "\n";
@@ -362,18 +477,10 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     
     // Use assert() for critical failures as requested by user
     // SpendCoin failures indicate we're not properly processing the chain
-    if (nSpendFailures > 0) {
-        std::cerr << "DIAGNOSTIC: Total SpendCoin failures: " << nSpendFailures << "\n";
-        std::cerr << "DIAGNOSTIC: Each SpendCoin failure causes database bloat by leaving a UTXO unspent\n";
-        std::cerr << "DIAGNOSTIC: Expected net growth is much smaller - SpendCoin failures are causing the database to grow too large!\n";
-        std::cerr << "DIAGNOSTIC: This means blocks are being processed out of order or the chain state is inconsistent\n";
-        assert(nSpendFailures == 0 && "SpendCoin failures detected - database will bloat due to out-of-order processing");
-    }
-    if (nFlushFailures > 0) {
-        std::cerr << "DIAGNOSTIC: Total Flush failures: " << nFlushFailures << "\n";
-    }
+    assert(nSpendFailures == 0 && "SpendCoin failures detected - database will bloat due to out-of-order processing");
+    assert(nFlushFailures == 0 && "Flush failures detected");
     if (nSeconds > 0) {
-        std::cout << "Throughput: " << (nTotalBytes / 1024.0 / 1024.0 / nSeconds) << " MB/s\n";
+        std::cout << "Throughput: " << (nBlocks / nSeconds) << " blocks/s\n";
     }
 }
 

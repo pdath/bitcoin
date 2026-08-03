@@ -2,6 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 
+// Debug flag - uncomment to enable debug output
+// #define DEBUG 1
+
 #include <rocksdb/coinsview.hpp>
 
 #include <serialize.h>
@@ -38,6 +41,10 @@ struct CoinEntry {
 CCoinsViewDB_RocksDB::CCoinsViewDB_RocksDB(const DBParams& db_params, const CoinsViewOptions& options)
     : m_path(PathToString(db_params.path)), m_cache_size(db_params.cache_bytes) {
     
+#ifdef DEBUG
+    std::cerr << "DBG: Opening RocksDB at " << m_path << "\n";
+#endif
+    
     m_options.create_if_missing = true;
     m_options.write_buffer_size = 256 * 1024 * 1024;  // 256MB
     m_options.compression = rocksdb::kNoCompression;
@@ -45,6 +52,12 @@ CCoinsViewDB_RocksDB::CCoinsViewDB_RocksDB(const DBParams& db_params, const Coin
     
     rocksdb::Status status = rocksdb::DB::Open(m_options, m_path, &m_db);
     assert(status.ok());
+    
+    // Check if database is empty
+    uint256 best_block = GetBestBlock();
+#ifdef DEBUG
+    std::cerr << "DBG: RocksDB opened, GetBestBlock()=" << best_block.ToString() << " isNull=" << best_block.IsNull() << "\n";
+#endif
 }
 
 CCoinsViewDB_RocksDB::~CCoinsViewDB_RocksDB() {
@@ -207,6 +220,25 @@ std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_
     db_params.memory_only = false;
     db_params.wipe_data = true;
     db_params.obfuscate = false;
+
+    // Wipe the database if requested (matches Bitcoin Knots behavior)
+    if (db_params.wipe_data) {
+#ifdef DEBUG
+        std::cerr << "DBG: Wiping RocksDB database at " << db_path << "\n";
+#endif
+        rocksdb::Options wipe_options;
+        wipe_options.create_if_missing = true;
+        rocksdb::Status status = rocksdb::DestroyDB(db_path, wipe_options);
+        if (!status.ok()) {
+#ifdef DEBUG
+            std::cerr << "DBG: DestroyDB status: " << status.ToString() << " (ok=" << status.ok() << ")\n";
+#endif
+        } else {
+#ifdef DEBUG
+            std::cerr << "DBG: Successfully wiped RocksDB database\n";
+#endif
+        }
+    }
 
     CoinsViewOptions options;
     options.batch_write_bytes = 64 * 1024 * 1024;

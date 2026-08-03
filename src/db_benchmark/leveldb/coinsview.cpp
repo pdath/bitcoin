@@ -2,6 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 
+// Debug flag - uncomment to enable debug output
+// #define DEBUG 1
+
 #include <leveldb/coinsview.hpp>
 
 #include <serialize.h>
@@ -40,6 +43,10 @@ struct CoinEntry {
 CCoinsViewDB_LevelDB::CCoinsViewDB_LevelDB(const DBParams& db_params, const CoinsViewOptions& options)
     : m_path(PathToString(db_params.path)), m_cache_size(db_params.cache_bytes) {
     
+#ifdef DEBUG
+    std::cerr << "DBG: Opening LevelDB at " << m_path << "\n";
+#endif
+    
     m_options.create_if_missing = true;
     m_options.write_buffer_size = 64 * 1024 * 1024;  // 64MB - match Bitcoin Knots (nCacheSize/4)
     m_options.block_cache = leveldb::NewLRUCache(m_cache_size / 2);  // Use half for block cache
@@ -49,6 +56,12 @@ CCoinsViewDB_LevelDB::CCoinsViewDB_LevelDB(const DBParams& db_params, const Coin
 
     leveldb::Status status = leveldb::DB::Open(m_options, m_path, &m_db);
     assert(status.ok());
+    
+    // Check if database is empty
+#ifdef DEBUG
+    uint256 best_block = GetBestBlock();
+    std::cerr << "DBG: LevelDB opened, GetBestBlock()=" << best_block.ToString() << " isNull=" << best_block.IsNull() << "\n";
+#endif
 }
 
 CCoinsViewDB_LevelDB::~CCoinsViewDB_LevelDB() {
@@ -211,6 +224,26 @@ std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_
     db_params.memory_only = false;
     db_params.wipe_data = true;
     db_params.obfuscate = false;
+
+    // Wipe the database if requested (matches Bitcoin Knots behavior)
+    if (db_params.wipe_data) {
+#ifdef DEBUG
+        std::cerr << "DBG: Wiping LevelDB database at " << db_path << "\n";
+#endif
+        leveldb::Options wipe_options;
+        wipe_options.create_if_missing = true;
+        leveldb::Status status = leveldb::DestroyDB(db_path, wipe_options);
+        if (!status.ok()) {
+#ifdef DEBUG
+            std::cerr << "DBG: DestroyDB status: " << status.ToString() << " (ok=" << status.ok() << ")\n";
+#endif
+            // Don't assert - this might be expected if directory doesn't exist
+        } else {
+#ifdef DEBUG
+            std::cerr << "DBG: Successfully wiped LevelDB database\n";
+#endif
+        }
+    }
 
     CoinsViewOptions options;
     options.batch_write_bytes = 64 * 1024 * 1024;
