@@ -23,12 +23,16 @@ const TranslateFn G_TRANSLATION_FUN{nullptr};
 #include <univalue.h> // For JSON parsing
 
 #include <chrono>
+#include <csignal>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
+
+// Debug flag for gdb breakpoint
+volatile int g_debug_break = 0;
 
 // Metrics collector
 #include <metrics_collector.hpp>
@@ -49,11 +53,16 @@ std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_
 static Obfuscation LoadXorKey(const fs::path& blocks_dir) {
     fs::path xor_key_path = blocks_dir / "xor.dat";
     
+    std::cerr << "DBG: Loading XOR key from " << fs::PathToString(xor_key_path) << " exists=" << fs::exists(xor_key_path) << "\n";
+    
     std::array<std::byte, Obfuscation::KEY_SIZE> xor_key{};
     
     if (fs::exists(xor_key_path)) {
         AutoFile xor_key_file{fsbridge::fopen(xor_key_path, "rb")};
         xor_key_file >> xor_key;
+        std::cerr << "DBG: XOR key loaded successfully\n";
+    } else {
+        std::cerr << "DBG: No XOR key file found\n";
     }
     
     return Obfuscation{xor_key};
@@ -62,14 +71,42 @@ static Obfuscation LoadXorKey(const fs::path& blocks_dir) {
 /**
  * Read all blocks from block files and apply to coins view.
  * Based on ChainstateManager::LoadExternalBlockFile from validation.cpp
+ * 
+ * Uses Bitcoin Knots' AddCoins for proper UTXO management.
+ * 
+ * Uses assert() for critical error handling as requested.
  */
-static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir, Obfuscation xor_key) {
+static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const fs::path& blocks_dir, Obfuscation xor_key, uint64_t& nSpendFailures, uint64_t& nFlushFailures, uint64_t& nCoinsAdded, uint64_t& nInputsSpent, uint64_t& nBlocksSkipped) {
     FlatFileSeq block_file_seq(blocks_dir, "blk", node::BLOCKFILE_CHUNK_SIZE);
     
     int nFile = 0;
     uint64_t nTotalBytes = 0;
     int nBlocks = 0;
+    nSpendFailures = 0;
+    nFlushFailures = 0;
+    nCoinsAdded = 0;
+    nInputsSpent = 0;
+    nBlocksSkipped = 0;
+    
+    // Get initial chain state from DATABASE, not cache (to avoid stale cache state)
+    // This is the key fix: use db_view.GetBestBlock() not cache.GetBestBlock()
+    uint256 hashTip = db_view.GetBestBlock();
+    std::cerr << "Initial hashTip: " << hashTip.ToString() << " (null=" << hashTip.IsNull() << ")\n";
+    std::cerr << "DBG: Starting with nBlocks=0, hashTip=" << hashTip.ToString() << ", hashTip.IsNull()=" << hashTip.IsNull() << "\n";
+    
+    // If hashTip is not null in a fresh database, that's a problem!
+    if (!hashTip.IsNull()) {
+        std::cerr << "\n*** ERROR: Fresh database has non-null hashTip! ***\n";
+        std::cerr << "hashTip: " << hashTip.ToString() << "\n";
+        g_debug_break = 2; // Different value for different breakpoints
+    }
+    
+    int nHeight = -1; // Will be set to 0 when we process genesis
+    
     auto nStart = std::chrono::high_resolution_clock::now();
+    
+    // Mainnet genesis block hash
+    const uint256 mainnetGenesisHash = uint256::FromHex("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").value();
     
     while (true) {
         FlatFilePos pos{nFile, 0};
@@ -79,6 +116,7 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
         }
         
         std::cout << "Processing file: " << fs::PathToString(filename) << "\n";
+        std::cerr << "DBG: Starting file " << fs::PathToString(filename) << " at nBlocks=" << nBlocks << " hashTip=" << hashTip.ToString() << "\n";
         
         try {
             FILE* file = block_file_seq.Open(pos, true);
@@ -89,7 +127,6 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
             }
             
             // Use AutoFile with XOR key for de-obfuscation
-            // AutoFile takes ownership of the FILE*, will close it automatically
             AutoFile file_in{file, xor_key};
             
             // Use BufferedFile for efficient reading with rewind capability
@@ -114,6 +151,13 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
                     MessageStartChars buf;
                     blkdat >> buf;
                     
+                    // Verify this is actually the Bitcoin magic (not a false positive)
+                    // Bitcoin Knots checks: if (buf != params.MessageStart()) continue;
+                    constexpr MessageStartChars MAINNET_MAGIC = {0xf9u, 0xbeu, 0xb4u, 0xd9u};
+                    if (buf != MAINNET_MAGIC) {
+                        continue;
+                    }
+                    
                     // Read size
                     blkdat >> nSize;
                     if (nSize < 80 || nSize > MAX_BLOCK_SERIALIZED_SIZE) {
@@ -131,73 +175,151 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
                     // Set limit to end of this block
                     blkdat.SetLimit(nBlockPos + nSize);
                     
-                    // Read and deserialize the block
+                    // Read and deserialize the block header first for chain validation
+                    CBlockHeader header;
+                    blkdat >> header;
+                    const uint256 hash = header.GetHash();
+                    
+                    std::cerr << "DBG: Block " << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " hashTip=" << hashTip.ToString() << " nBlocks=" << nBlocks << " hashTip.IsNull()=" << hashTip.IsNull() << " isGenesis=" << (hash == mainnetGenesisHash) << " prevNull=" << header.hashPrevBlock.IsNull() << "\n";
+                    
+                    // Check chain continuity - block must connect to current tip
+                    // For fresh start: if hashTip is null (fresh db) and this is our first block, accept it
+                    // For subsequent blocks: must connect to current tip
+                    if (nBlocks == 0 && hashTip.IsNull()) {
+                        // Fresh database, first block - accept it as the start of our chain
+                        // This handles both genesis and starting from a checkpoint
+                        std::cerr << "DBG: ACCEPTING first block with null hashTip. hash=" << hash.ToString() << " isGenesis=" << (hash == mainnetGenesisHash) << "\n";
+                        hashTip = hash;
+                        nHeight = 0; // Genesis block is height 0
+                        if (hashTip.ToString() == "00000000eae98bf15e531e004bcaffdf3c5c5cc6444c52a9fd0f82101249ba95") {
+                            std::cerr << "\n*** MARKER at line 179: hashTip set to suspicious value! ***\n";
+                            std::cerr << "Block: " << hash.ToString() << "\n";
+                            std::cerr << "nBlocks: " << nBlocks << "\n";
+                        }
+                    } else if (nBlocks == 0) {
+                        // First block but database has existing data
+                        // Only accept if it's genesis or matches the expected chain
+                        std::cerr << "DBG: First block with existing db data. hash=" << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " hashTip=" << hashTip.ToString() << " isGenesis=" << (hash == mainnetGenesisHash) << " prevNull=" << header.hashPrevBlock.IsNull() << "\n";
+                        if (header.hashPrevBlock.IsNull() && hash == mainnetGenesisHash) {
+                            std::cerr << "DBG: Accepting genesis block\n";
+                            hashTip = hash;
+                            nHeight = 0;
+                            if (hashTip.ToString() == "00000000eae98bf15e531e004bcaffdf3c5c5cc6444c52a9fd0f82101249ba95") {
+                                std::cerr << "\n*** MARKER at line 188: hashTip set to suspicious value! ***\n";
+                                std::cerr << "Block: " << hash.ToString() << "\n";
+                                std::cerr << "nBlocks: " << nBlocks << "\n";
+                            }
+                        } else {
+                            // Skip - doesn't match our chain
+                            std::cerr << "DBG: REJECTING first block because not genesis or doesn't match\n";
+                            nBlocksSkipped++;
+                            if (nBlocksSkipped <= 10) {
+                                std::cerr << "Skipping block " << hash.ToString() << " (prev=" << header.hashPrevBlock.ToString() << ", tip=" << hashTip.ToString() << ") - not genesis\n";
+                            } else if (nBlocksSkipped == 11) {
+                                std::cerr << "... (additional blocks skipped, total: " << nBlocksSkipped << ")\n";
+                            }
+                            continue;
+                        }
+                    } else if (header.hashPrevBlock != hashTip) {
+                        // Block doesn't connect to current tip - skip it (reorg/side chain)
+                        std::cerr << "DBG: REJECTING block (not connecting to tip). hash=" << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " hashTip=" << hashTip.ToString() << "\n";
+                        nBlocksSkipped++;
+                        if (nBlocksSkipped <= 10) {
+                            std::cerr << "Skipping block " << hash.ToString() << " (prev=" << header.hashPrevBlock.ToString() << ", tip=" << hashTip.ToString() << ")\n";
+                        } else if (nBlocksSkipped == 11) {
+                            std::cerr << "... (additional blocks skipped, total: " << nBlocksSkipped << ")\n";
+                        }
+                        continue;
+                    } else {
+                        // Block connects properly
+                        uint256 oldHashTip = hashTip;
+                        hashTip = hash;
+                        std::cerr << "DBG: ACCEPTING block. hash=" << hash.ToString() << " prev=" << header.hashPrevBlock.ToString() << " oldHashTip=" << oldHashTip.ToString() << " newHashTip=" << hashTip.ToString() << " nHeight=" << nHeight << " -> " << nHeight+1 << "\n";
+                        nHeight++; // Increment height for each new block
+                        
+                        // Marker: check if hashTip was just set to the suspicious value
+                        if (hashTip.ToString() == "00000000eae98bf15e531e004bcaffdf3c5c5cc6444c52a9fd0f82101249ba95") {
+                            std::cerr << "\n*** MARKER at line 214: hashTip set to suspicious value! ***\n";
+                            std::cerr << "Block: " << hash.ToString() << "\n";
+                            std::cerr << "Prev: " << header.hashPrevBlock.ToString() << "\n";
+                            std::cerr << "oldHashTip: " << oldHashTip.ToString() << "\n";
+                            std::cerr << "nBlocks: " << nBlocks << "\n";
+                            std::cerr << "nHeight: " << nHeight << "\n";
+                            g_debug_break = 1; // Set flag for gdb conditional breakpoint
+                        }
+                    }
+                    
+                    // Now read the full block
+                    blkdat.SetPos(nBlockPos);
+                    blkdat.SetLimit(nBlockPos + nSize);
                     CBlock block;
                     blkdat >> TX_WITH_WITNESS(block);
+                    
+                    // Verify the block hash matches
+                    assert(block.GetHash() == hash && "Block hash mismatch after deserialization");
                     
                     // Update rewind position to after this block
                     nRewind = blkdat.GetPos();
                     blkdat.SkipTo(nRewind);
                     
-                    // Process transactions in block
+                    // Process transactions in block using Bitcoin Knots' AddCoins
+                    // This is the proper way to add transaction outputs to the coins view
                     for (size_t i = 0; i < block.vtx.size(); ++i) {
                         const CTransaction& tx = *block.vtx[i];
                         bool is_coinbase = (i == 0);
-                        int nHeight = 0; // We don't track height in this simple benchmark
-                        const Txid& txid = tx.GetHash();
                         
-                        if (is_coinbase) {
-                            // Instrumented version of AddCoins for coinbase
-                            for (size_t j = 0; j < tx.vout.size(); ++j) {
-                                // For coinbase, always allow overwrite
-                                {
-                                    ScopedTimer timer(g_metrics_collector.stats_cache_have_coin);
-                                    cache.HaveCoin(COutPoint(txid, j));
-                                }
-                                {
-                                    ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
-                                    cache.AddCoin(COutPoint(txid, j), Coin(tx.vout[j], nHeight, true), true);
-                                }
-                            }
-                        } else {
-                            // Spend inputs
+                        if (!is_coinbase) {
+                            // For non-coinbase: spend inputs first
                             for (const CTxIn& txin : tx.vin) {
-                                Coin coin;
                                 {
                                     ScopedTimer timer(g_metrics_collector.stats_cache_spend_coin);
-                                    bool is_spent = cache.SpendCoin(txin.prevout, &coin);
+                                    bool is_spent = cache.SpendCoin(txin.prevout, nullptr);
+                                    // In a valid blockchain, SpendCoin should always succeed for non-coinbase tx inputs
+                                    // If it fails, it means we're processing blocks out of order or the database is corrupted
                                     if (!is_spent) {
-                                        // In benchmark mode during initial sync, inputs might not exist yet
-                                        // This can happen with out-of-order blocks, but for a reindex
-                                        // starting from genesis, all inputs should exist
+                                        nSpendFailures++;
+                                        if (nSpendFailures <= 10) {
+                                            std::cerr << "WARNING: SpendCoin failed for " << txin.prevout.hash.ToString() << ":" << txin.prevout.n << " in block " << hash.ToString() << " at height " << nHeight << "\n";
+                                        } else if (nSpendFailures == 11) {
+                                            std::cerr << "... (additional SpendCoin failures, total: " << nSpendFailures << ")\n";
+                                        }
+                                    } else {
+                                        nInputsSpent++;
                                     }
                                 }
                             }
-                            // Add outputs
-                            for (size_t j = 0; j < tx.vout.size(); ++j) {
-                                bool overwrite = false; // For non-coinbase, check if coin exists
-                                {
-                                    ScopedTimer timer(g_metrics_collector.stats_cache_have_coin);
-                                    overwrite = cache.HaveCoin(COutPoint(txid, j));
-                                }
-                                {
-                                    ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
-                                    cache.AddCoin(COutPoint(txid, j), Coin(tx.vout[j], nHeight, false), overwrite);
-                                }
-                            }
+                        }
+                        
+                        // Add outputs using Bitcoin Knots' AddCoins function
+                        // This properly handles coinbase vs non-coinbase and overwrite logic
+                        {
+                            ScopedTimer timer(g_metrics_collector.stats_cache_add_coin);
+                            bool check_for_overwrite = !is_coinbase;
+                            AddCoins(cache, tx, nHeight, check_for_overwrite);
+                            nCoinsAdded += tx.vout.size();
                         }
                     }
+                    
+                    // Set best block for the cache - this updates the mutable hashBlock
+                    cache.SetBestBlock(hash);
                     
                     nBlocks++;
                     nTotalBytes += nSize;
                     
                     // Flush cache periodically to avoid using too much memory
-                    if (nBlocks % 1000 == 0) {
+                    if (nBlocks % 100 == 0) {
+                        bool flush_ok;
                         {
                             ScopedTimer timer(g_metrics_collector.stats_cache_flush);
-                            cache.Flush();
+                            flush_ok = cache.Flush();
                         }
-                        std::cout << "  Processed " << nBlocks << " blocks (" << nTotalBytes / 1024 / 1024 << " MB)...\n";
+                        if (!flush_ok) {
+                            nFlushFailures++;
+                            std::cerr << "CRITICAL: Flush failed at block " << nBlocks << " (height=" << nHeight << ")! Database writes are failing.\n";
+                            // Use assert to get core dump on first failure
+                            assert(flush_ok && "Flush failed - database write error");
+                        }
+                        std::cout << "  Processed " << nBlocks << " blocks (" << nTotalBytes / 1024 / 1024 << " MB, height=" << nHeight << ")...\n";
                     }
                 } catch (const std::exception& e) {
                     // Block failed to deserialize, try next one
@@ -216,15 +338,40 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, const fs::path& blocks_dir,
     }
     
     // Final flush
+    bool final_flush_ok;
     {
         ScopedTimer timer(g_metrics_collector.stats_cache_flush);
-        cache.Flush();
+        final_flush_ok = cache.Flush();
+    }
+    if (!final_flush_ok) {
+        nFlushFailures++;
+        std::cerr << "CRITICAL: Final flush failed at block " << nBlocks << " (height=" << nHeight << ")! Database writes are failing.\n";
+        assert(final_flush_ok && "Final flush failed - database write error");
     }
     
     auto nEnd = std::chrono::high_resolution_clock::now();
     double nSeconds = std::chrono::duration<double>(nEnd - nStart).count();
     
-    std::cout << "\nProcessed " << nBlocks << " blocks, " << nTotalBytes / 1024 / 1024 << " MB in " << nSeconds << " seconds\n";
+    std::cout << "\nProcessed " << nBlocks << " blocks (height=" << nHeight << "), " << nTotalBytes / 1024 / 1024 << " MB in " << nSeconds << " seconds\n";
+    
+    // Report diagnostics
+    std::cout << "DIAGNOSTIC: Coins added: " << nCoinsAdded << ", Inputs spent: " << nInputsSpent << ", Net growth: " << (nCoinsAdded - nInputsSpent) << "\n";
+    if (nBlocksSkipped > 0) {
+        std::cout << "DIAGNOSTIC: Blocks skipped (not in main chain): " << nBlocksSkipped << "\n";
+    }
+    
+    // Use assert() for critical failures as requested by user
+    // SpendCoin failures indicate we're not properly processing the chain
+    if (nSpendFailures > 0) {
+        std::cerr << "DIAGNOSTIC: Total SpendCoin failures: " << nSpendFailures << "\n";
+        std::cerr << "DIAGNOSTIC: Each SpendCoin failure causes database bloat by leaving a UTXO unspent\n";
+        std::cerr << "DIAGNOSTIC: Expected net growth is much smaller - SpendCoin failures are causing the database to grow too large!\n";
+        std::cerr << "DIAGNOSTIC: This means blocks are being processed out of order or the chain state is inconsistent\n";
+        assert(nSpendFailures == 0 && "SpendCoin failures detected - database will bloat due to out-of-order processing");
+    }
+    if (nFlushFailures > 0) {
+        std::cerr << "DIAGNOSTIC: Total Flush failures: " << nFlushFailures << "\n";
+    }
     if (nSeconds > 0) {
         std::cout << "Throughput: " << (nTotalBytes / 1024.0 / 1024.0 / nSeconds) << " MB/s\n";
     }
@@ -243,7 +390,12 @@ void RunIBDBenchmark(CCoinsView& db_view) {
     fs::path blocks_dir = fs::u8path("/home/knots-mainnet/.bitcoin/blocks");
     Obfuscation xor_key = LoadXorKey(blocks_dir);
     
-    ProcessAllBlocks(cache, blocks_dir, xor_key);
+    uint64_t nSpendFailures = 0;
+    uint64_t nFlushFailures = 0;
+    uint64_t nCoinsAdded = 0;
+    uint64_t nInputsSpent = 0;
+    uint64_t nBlocksSkipped = 0;
+    ProcessAllBlocks(cache, db_view, blocks_dir, xor_key, nSpendFailures, nFlushFailures, nCoinsAdded, nInputsSpent, nBlocksSkipped);
     
     // Get final best block
     uint256 best_block;
@@ -328,7 +480,7 @@ static std::vector<CTransactionRef> LoadMempoolTransactions(const fs::path& memp
 /**
  * Process mempool transactions against the coins view cache.
  */
-static void ProcessMempoolTransactions(CCoinsViewCache& cache, const std::vector<CTransactionRef>& transactions) {
+static void ProcessMempoolTransactions(CCoinsViewCache& cache, const std::vector<CTransactionRef>& transactions, uint64_t& nSpendFailures) {
     int nHeight = 0; // Steady-state doesn't track height
     
     for (size_t i = 0; i < transactions.size(); ++i) {
@@ -342,6 +494,10 @@ static void ProcessMempoolTransactions(CCoinsViewCache& cache, const std::vector
                 ScopedTimer timer(g_metrics_collector.stats_cache_spend_coin);
                 bool is_spent = cache.SpendCoin(txin.prevout, &coin);
                 if (!is_spent) {
+                    nSpendFailures++;
+                    if (nSpendFailures <= 10) {
+                        std::cerr << "INFO: Mempool SpendCoin failed for " << txin.prevout.hash.ToString() << ":" << txin.prevout.n << " (tx: " << txid.ToString() << ") - expected for unconfirmed inputs\n";
+                    }
                     // In mempool replay, inputs might not exist in our chainstate
                     // This is expected for transactions spending unconfirmed inputs
                 }
@@ -382,14 +538,21 @@ void RunSteadyStateBenchmark(CCoinsView& db_view) {
         return;
     }
     
+    uint64_t nSpendFailures = 0;
+    
     // Process all transactions
     auto start = std::chrono::high_resolution_clock::now();
-    ProcessMempoolTransactions(cache, transactions);
+    ProcessMempoolTransactions(cache, transactions, nSpendFailures);
     
     // Final flush
+    bool flush_ok;
     {
         ScopedTimer timer(g_metrics_collector.stats_cache_flush);
-        cache.Flush();
+        flush_ok = cache.Flush();
+    }
+    if (!flush_ok) {
+        std::cerr << "CRITICAL: Flush failed in steady-state benchmark! Database writes are failing.\n";
+        assert(flush_ok && "Steady-state flush failed - database write error");
     }
     
     auto end = std::chrono::high_resolution_clock::now();
@@ -399,6 +562,11 @@ void RunSteadyStateBenchmark(CCoinsView& db_view) {
               << elapsed << " seconds\n";
     if (elapsed > 0) {
         std::cout << "Throughput: " << (transactions.size() / elapsed) << " tx/s\n";
+    }
+    
+    // Report diagnostics
+    if (nSpendFailures > 0) {
+        std::cerr << "DIAGNOSTIC: Mempool SpendCoin failures: " << nSpendFailures << " (expected for transactions spending unconfirmed inputs)\n";
     }
     
     std::cout << "Steady-state benchmark completed.\n";
