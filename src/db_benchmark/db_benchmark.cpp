@@ -145,6 +145,7 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     
     int nFile = 0;
     int nBlocks = 0;
+    int nMainBlocks = 0; // Count only main blocks (not buffered) for flush timing
     nSpendFailures = 0;
     nFlushFailures = 0;
     nCoinsAdded = 0;
@@ -167,8 +168,9 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     std::map<uint256, int> knownBlocks;
     
     // Buffer for blocks with unknown parents (like Bitcoin Knots' blocks_with_unknown_parent)
-    // Maps parent hash -> list of (child hash, file position, block size)
-    std::multimap<uint256, std::tuple<uint256, FlatFilePos, unsigned int>> blocks_with_unknown_parent;
+    // Maps parent hash -> list of (child block hash, child block shared_ptr, height when parent is known)
+    // We store the full CBlock in memory like Bitcoin Knots does, rather than file positions
+    std::multimap<uint256, std::tuple<uint256, std::shared_ptr<CBlock>, int>> blocks_with_unknown_parent;
     
     auto nStart = std::chrono::high_resolution_clock::now();
     
@@ -263,7 +265,14 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         block_height = 0;
                     } else if (!parent_exists) {
                         // Parent not known - buffer for later (like Bitcoin Knots' blocks_with_unknown_parent)
-                        blocks_with_unknown_parent.emplace(header.hashPrevBlock, std::make_tuple(hash, FlatFilePos{nFile, static_cast<unsigned int>(nBlockPos)}, nSize));
+                        // Read the full block data into memory and store it
+                        blkdat.SetPos(nBlockPos);
+                        blkdat.SetLimit(nBlockPos + nSize);
+                        std::shared_ptr<CBlock> block_ref = std::make_shared<CBlock>();
+                        blkdat >> TX_WITH_WITNESS(*block_ref);
+                        assert(block_ref->GetHash() == hash && "Block hash mismatch when buffering");
+                        // Store with height -1, will be computed when parent is found
+                        blocks_with_unknown_parent.emplace(header.hashPrevBlock, std::make_tuple(hash, block_ref, -1));
                         continue;
                     } else {
                         // Parent exists in index - accept this block
@@ -330,10 +339,10 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         nHeight = block_height;
                     }
                     nBlocks++; // Count the main block
+                    nMainBlocks++; // Count main blocks separately for flush timing
                     
                     // Process any buffered blocks that have this block as parent
-                    // Use the EXISTING blkdat BufferedFile, not a new one for each block
-                    // This fixes the bug where new BufferedFile has nSrcPos=0 and SetPos fails
+                    // Now that we store CBlockRef in memory, we don't need to re-read from disk
                     std::deque<uint256> queue;
                     queue.push_back(hash);
                     while (!queue.empty()) {
@@ -342,50 +351,16 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         auto range = blocks_with_unknown_parent.equal_range(head);
                         for (auto it = range.first; it != range.second; ) {
                             const uint256& child_hash = std::get<0>(it->second);
-                            const FlatFilePos& child_pos = std::get<1>(it->second);
-                            const unsigned int child_nSize = std::get<2>(it->second);
-                            
-                            // Use the existing blkdat BufferedFile - do NOT create a new one
-                            // The position stored is where the block data starts (after magic+size)
-                            // Must ensure we're in the correct file
-                            if (child_pos.nFile != nFile) {
-                                // Different file - need to reopen
-                                // Close current file first
-                                blkdat.SkipTo(blkdat.GetPos()); // Ensure current position is saved
-                                // This is complex - for now, skip cross-file buffered blocks
-                                // In practice, blocks in the same blk*.dat file should be sequential
-    
-                                blocks_with_unknown_parent.erase(it++);
-                                range = blocks_with_unknown_parent.equal_range(head);
-                                continue;
-                            }
-                            
-                            // Seek to the buffered block position in the current file
-                            blkdat.SetPos(child_pos.nPos);
-                            blkdat.SetLimit(child_pos.nPos + child_nSize);
-                            
-                            CBlock child_block;
-                            try {
-                                blkdat >> TX_WITH_WITNESS(child_block);
-                            } catch (const std::exception&) {
-                                blocks_with_unknown_parent.erase(it++);
-                                range = blocks_with_unknown_parent.equal_range(head);
-                                continue;
-                            }
-                            
-                            // Verify hash
-                            if (child_block.GetHash() != child_hash) {
-                                blocks_with_unknown_parent.erase(it++);
-                                range = blocks_with_unknown_parent.equal_range(head);
-                                continue;
-                            }
+                            std::shared_ptr<CBlock>& child_block_ref = std::get<1>(it->second);
+                            int& child_height = std::get<2>(it->second);
                             
                             // Compute child height based on parent's height
                             int parent_height = knownBlocks[head];
-                            int child_height = parent_height + 1;
+                            child_height = parent_height + 1;
                             
                             // Process the buffered block's transactions
                             // This mirrors Bitcoin Knots' AcceptBlock() processing
+                            const CBlock& child_block = *child_block_ref;
                             for (size_t i = 0; i < child_block.vtx.size(); ++i) {
                                 const CTransaction& tx = *child_block.vtx[i];
                                 bool is_coinbase = (i == 0);
@@ -415,8 +390,11 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                             // Update state for this buffered block
                             knownBlocks[child_hash] = child_height;
                             cache.SetBestBlock(child_hash);
-                            hashTip = child_hash;
-                            nHeight = child_height;
+                            // Update hashTip and nHeight only if this extends the current tip
+                            if (child_height > nHeight) {
+                                hashTip = child_hash;
+                                nHeight = child_height;
+                            }
                             nBlocks++;
                             
                             // Add to queue for recursive processing of its children
@@ -430,7 +408,7 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     
                     // Flush cache periodically to avoid using too much memory
                     // Mirror Bitcoin Knots' behavior: flush less frequently to batch writes
-                    if (nBlocks % 1000 == 0) {
+                    if (nMainBlocks % 1000 == 0) {
                         bool flush_ok;
                         {
                             ScopedTimer timer(g_metrics_collector.stats_cache_flush);
