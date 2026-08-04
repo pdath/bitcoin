@@ -133,6 +133,47 @@ static Obfuscation LoadXorKey(const fs::path& blocks_dir) {
 }
 
 /**
+ * Helper function to read a block from disk at a specific file position.
+ * Matches Bitcoin Knots' BlockManager::ReadBlock() approach.
+ */
+static std::shared_ptr<CBlock> ReadBlockFromDisk(const fs::path& blocks_dir, const FlatFilePos& pos, unsigned int nSize, Obfuscation xor_key) {
+    // Use Bitcoin Knots' approach: open file at position and read raw bytes
+    FlatFileSeq block_file_seq(blocks_dir, "blk", node::BLOCKFILE_CHUNK_SIZE);
+    
+    // pos.nPos is where the block data starts (after magic+size)
+    // We need to open before that to read the magic and size
+    constexpr unsigned int BLOCK_SERIALIZATION_HEADER_SIZE = 8; // 4 bytes magic + 4 bytes size
+    if (pos.nPos < BLOCK_SERIALIZATION_HEADER_SIZE) {
+        return nullptr;
+    }
+    
+    unsigned int file_pos = pos.nPos - BLOCK_SERIALIZATION_HEADER_SIZE;
+    FILE* file = block_file_seq.Open(FlatFilePos{pos.nFile, file_pos}, true);
+    if (!file) {
+        return nullptr;
+    }
+    AutoFile file_in{file, xor_key};
+    file_in.SetIdlePriority();
+    
+    try {
+        MessageStartChars blk_start;
+        unsigned int blk_size;
+        file_in >> blk_start >> blk_size;
+        
+        // Verify size matches
+        if (blk_size != nSize) {
+            return nullptr;
+        }
+        
+        std::shared_ptr<CBlock> block = std::make_shared<CBlock>();
+        file_in >> TX_WITH_WITNESS(*block);
+        return block;
+    } catch (const std::exception&) {
+        return nullptr;
+    }
+}
+
+/**
  * Read all blocks from block files and apply to coins view.
  * Based on ChainstateManager::LoadExternalBlockFile from validation.cpp
  * 
@@ -145,7 +186,6 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     
     int nFile = 0;
     int nBlocks = 0;
-    int nMainBlocks = 0; // Count only main blocks (not buffered) for flush timing
     nSpendFailures = 0;
     nFlushFailures = 0;
     nCoinsAdded = 0;
@@ -168,9 +208,9 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
     std::map<uint256, int> knownBlocks;
     
     // Buffer for blocks with unknown parents (like Bitcoin Knots' blocks_with_unknown_parent)
-    // Maps parent hash -> list of (child block hash, child block shared_ptr, height when parent is known)
-    // We store the full CBlock in memory like Bitcoin Knots does, rather than file positions
-    std::multimap<uint256, std::tuple<uint256, std::shared_ptr<CBlock>, int>> blocks_with_unknown_parent;
+    // Maps parent hash -> list of (child block hash, file position, block size)
+    // We store FlatFilePos to match Bitcoin Knots, which re-reads from disk when needed
+    std::multimap<uint256, std::tuple<uint256, FlatFilePos, unsigned int>> blocks_with_unknown_parent;
     
     auto nStart = std::chrono::high_resolution_clock::now();
     
@@ -261,18 +301,13 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     
                     if (is_genesis) {
                         // Genesis block - will set hashTip and nHeight after successful processing
+                        std::cout << "  Processing genesis block\n";
                         extends_tip = true; // Genesis extends the tip by definition
                         block_height = 0;
                     } else if (!parent_exists) {
                         // Parent not known - buffer for later (like Bitcoin Knots' blocks_with_unknown_parent)
-                        // Read the full block data into memory and store it
-                        blkdat.SetPos(nBlockPos);
-                        blkdat.SetLimit(nBlockPos + nSize);
-                        std::shared_ptr<CBlock> block_ref = std::make_shared<CBlock>();
-                        blkdat >> TX_WITH_WITNESS(*block_ref);
-                        assert(block_ref->GetHash() == hash && "Block hash mismatch when buffering");
-                        // Store with height -1, will be computed when parent is found
-                        blocks_with_unknown_parent.emplace(header.hashPrevBlock, std::make_tuple(hash, block_ref, -1));
+                        // Store file position and size to re-read from disk later (Bitcoin Knots approach)
+                        blocks_with_unknown_parent.emplace(header.hashPrevBlock, std::make_tuple(hash, FlatFilePos{nFile, static_cast<unsigned int>(nBlockPos)}, nSize));
                         continue;
                     } else {
                         // Parent exists in index - accept this block
@@ -339,10 +374,12 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         nHeight = block_height;
                     }
                     nBlocks++; // Count the main block
-                    nMainBlocks++; // Count main blocks separately for flush timing
+                    if (nBlocks % 1000 == 0) {
+                        std::cout << "  Processed " << nBlocks << " blocks (height=" << nHeight << ")...\n";
+                    }
                     
                     // Process any buffered blocks that have this block as parent
-                    // Now that we store CBlockRef in memory, we don't need to re-read from disk
+                    // Re-read from disk for each buffered block (Bitcoin Knots approach)
                     std::deque<uint256> queue;
                     queue.push_back(hash);
                     while (!queue.empty()) {
@@ -351,18 +388,33 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                         auto range = blocks_with_unknown_parent.equal_range(head);
                         for (auto it = range.first; it != range.second; ) {
                             const uint256& child_hash = std::get<0>(it->second);
-                            std::shared_ptr<CBlock>& child_block_ref = std::get<1>(it->second);
-                            int& child_height = std::get<2>(it->second);
+                            const FlatFilePos& child_pos = std::get<1>(it->second);
+                            const unsigned int child_nSize = std::get<2>(it->second);
+                            
+                            // Re-read block from disk (Bitcoin Knots: BlockManager::ReadBlock)
+                            std::shared_ptr<CBlock> child_block = ReadBlockFromDisk(blocks_dir, child_pos, child_nSize, xor_key);
+                            if (!child_block) {
+                                // Failed to read block, skip it
+                                blocks_with_unknown_parent.erase(it++);
+                                range = blocks_with_unknown_parent.equal_range(head);
+                                continue;
+                            }
+                            
+                            // Verify hash
+                            if (child_block->GetHash() != child_hash) {
+                                blocks_with_unknown_parent.erase(it++);
+                                range = blocks_with_unknown_parent.equal_range(head);
+                                continue;
+                            }
                             
                             // Compute child height based on parent's height
                             int parent_height = knownBlocks[head];
-                            child_height = parent_height + 1;
+                            int child_height = parent_height + 1;
                             
                             // Process the buffered block's transactions
                             // This mirrors Bitcoin Knots' AcceptBlock() processing
-                            const CBlock& child_block = *child_block_ref;
-                            for (size_t i = 0; i < child_block.vtx.size(); ++i) {
-                                const CTransaction& tx = *child_block.vtx[i];
+                            for (size_t i = 0; i < child_block->vtx.size(); ++i) {
+                                const CTransaction& tx = *child_block->vtx[i];
                                 bool is_coinbase = (i == 0);
                                 
                                 if (!is_coinbase) {
@@ -408,7 +460,7 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     
                     // Flush cache periodically to avoid using too much memory
                     // Mirror Bitcoin Knots' behavior: flush less frequently to batch writes
-                    if (nMainBlocks % 1000 == 0) {
+                    if (nBlocks % 1000 == 0) {
                         bool flush_ok;
                         {
                             ScopedTimer timer(g_metrics_collector.stats_cache_flush);

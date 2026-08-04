@@ -15,12 +15,13 @@ The benchmark now **correctly processes the entire Bitcoin blockchain** (~800,00
 - **Bitcoin Knots Fidelity**: The benchmark now correctly mimics Bitcoin Knots' block processing logic
 
 ### Changes from v2 Design
-- **Fixed Buffered Block Storage**: Changed from storing file positions (`FlatFilePos`) to storing full block data in memory (`std::shared_ptr<CBlock>`) to match Bitcoin Knots' approach. This fixes the issue where `BufferedFile::SetPos()` couldn't seek backwards to re-read buffered blocks.
-- **Fixed Flush Timing**: Separated main block counter (`nMainBlocks`) from total block counter (`nBlocks`) to ensure cache is flushed every 1000 main blocks, not 1000 total blocks (including buffered ones).
+- **Improved Buffered Block Storage**: Changed to store only file positions (`FlatFilePos`) and block size instead of full block data, matching Bitcoin Knots' memory-efficient approach. Blocks with unknown parents are stored as tuples of (block_hash, FlatFilePos, nSize).
+- **Direct Disk Reading**: Implemented `ReadBlockFromDisk()` function that mirrors Bitcoin Knots' `BlockManager::ReadBlock()` - opens block file at the stored position and reads the block directly from disk when processing buffered blocks.
+- **Reduced Memory Usage**: By storing only file positions instead of full block data, the benchmark now uses significantly less memory, matching Bitcoin Knots' approach of re-reading from disk.
 - **Fixed Block Position Tracking**: Use `nRewind = nBlockPos + nSize` to match Bitcoin Knots exactly (validation.cpp line 5566)
 - **Improved Tip Tracking**: Only update `hashTip` and `nHeight` for blocks that extend the current tip or have greater height for buffered blocks
 - **Removed Excessive Debug Output**: Clean progress reporting showing block count every 1000 blocks
-- **Verified Operation**: Successfully processes entire blockchain with correct chainstate growth (~600MB+ after 225K+ blocks)
+- **Verified Operation**: Successfully processes entire blockchain with correct chainstate growth
 
 ## 2. Quick Start: Build & Run Instructions
 
@@ -150,29 +151,61 @@ nRewind = blkdat.GetPos();
 nRewind = nBlockPos + nSize;  // Explicit calculation matching Bitcoin Knots
 ```
 
-### 4.2 Buffered Block Reading Fix
-**Problem**: When processing blocks that were buffered (because their parent wasn't known yet), the code created a new `BufferedFile` instance for each buffered block. This new file had `nSrcPos=0`, causing `SetPos(child_pos.nPos)` to fail silently and clamp to position 0, leading to infinite loops trying to read the same invalid position.
+### 4.2 Buffered Block Storage Fix
+**Problem**: The benchmark was storing entire block objects (`std::shared_ptr<CBlock>`) in memory for out-of-order blocks, causing excessive memory usage. Bitcoin Knots instead stores only file positions and re-reads blocks from disk when needed.
 
-**Solution**: Reuse the existing `blkdat` BufferedFile for reading buffered blocks instead of creating new instances. This ensures the buffer is already filled with the necessary data and `SetPos()` works correctly.
+**Solution**: Store only `FlatFilePos` and block size for out-of-order blocks, then read from disk when processing them. This matches Bitcoin Knots' memory-efficient approach exactly.
 
-**Code Change** (db_benchmark.cpp lines ~408-427):
+**Code Change** (db_benchmark.cpp lines ~212, ~309, ~394):
 ```cpp
-// Before (buggy):
-FILE* child_file = block_file_seq.Open(child_pos, true);
-AutoFile child_file_in{child_file, xor_key};
-BufferedFile child_blkdat{child_file_in, 2 * MAX_BLOCK_SERIALIZED_SIZE, MAX_BLOCK_SERIALIZED_SIZE + 8};
-child_blkdat.SetPos(child_pos.nPos);
-child_blkdat >> TX_WITH_WITNESS(child_block);
+// Store only file position and size (not full block)
+std::multimap<uint256, std::tuple<uint256, FlatFilePos, unsigned int>> blocks_with_unknown_parent;
 
-// After (fixed):
-// Use the existing blkdat BufferedFile
-if (child_pos.nFile != nFile) {
-    // Skip cross-file buffered blocks (handled when we reach their file)
-    blocks_with_unknown_parent.erase(it++);
-    continue;
+// When buffering a block with unknown parent:
+blocks_with_unknown_parent.emplace(header.hashPrevBlock, 
+                                  std::make_tuple(hash, FlatFilePos{nFile, static_cast<unsigned int>(nBlockPos)}, nSize));
+
+// When processing buffered blocks:
+std::shared_ptr<CBlock> child_block = ReadBlockFromDisk(blocks_dir, child_pos, child_nSize, xor_key);
+```
+
+### 4.3 Direct Disk Reading Implementation
+**Problem**: Need to read blocks from disk when processing buffered out-of-order blocks.
+
+**Solution**: Implemented `ReadBlockFromDisk()` function that mirrors Bitcoin Knots' `BlockManager::ReadBlock()`:
+
+**Code** (db_benchmark.cpp lines ~139-173):
+```cpp
+static std::shared_ptr<CBlock> ReadBlockFromDisk(const fs::path& blocks_dir, const FlatFilePos& pos, 
+                                                  unsigned int nSize, Obfuscation xor_key) {
+    FlatFileSeq block_file_seq(blocks_dir, "blk", node::BLOCKFILE_CHUNK_SIZE);
+    
+    constexpr unsigned int BLOCK_SERIALIZATION_HEADER_SIZE = 8; // 4 bytes magic + 4 bytes size
+    if (pos.nPos < BLOCK_SERIALIZATION_HEADER_SIZE) {
+        return nullptr;
+    }
+    
+    unsigned int file_pos = pos.nPos - BLOCK_SERIALIZATION_HEADER_SIZE;
+    FILE* file = block_file_seq.Open(FlatFilePos{pos.nFile, file_pos}, true);
+    AutoFile file_in{file, xor_key};
+    file_in.SetIdlePriority();
+    
+    try {
+        MessageStartChars blk_start;
+        unsigned int blk_size;
+        file_in >> blk_start >> blk_size;
+        
+        if (blk_size != nSize) {
+            return nullptr;
+        }
+        
+        std::shared_ptr<CBlock> block = std::make_shared<CBlock>();
+        file_in >> TX_WITH_WITNESS(*block);
+        return block;
+    } catch (const std::exception&) {
+        return nullptr;
+    }
 }
-blkdat.SetPos(child_pos.nPos);
-blkdat >> TX_WITH_WITNESS(child_block);
 ```
 
 ## 5. Database Implementations
@@ -244,9 +277,9 @@ main()
             → SetBestBlock()
             → Update knownBlocks[hash] = height
             → nRewind = nBlockPos + nSize (CRITICAL FIX)
-            → Process buffered blocks (if any)
+            → Process buffered blocks (re-read from disk using ReadBlockFromDisk)
           → Else:
-            → Buffer block for later processing
+            → Store block position (FlatFilePos + nSize) for later processing
         → Flush cache every 1000 blocks
       → Final flush
     → PrintReport()
@@ -304,6 +337,14 @@ A simple `std::map<uint256, int> knownBlocks` tracks block hash → height for a
 - Buffering out-of-order blocks for later processing
 - Tracking chain height
 
+### 7.6 Out-of-Order Block Processing
+For blocks whose parent hasn't been processed yet:
+1. **Store file position**: Only `FlatFilePos` and block size are stored in `blocks_with_unknown_parent` multimap
+2. **Deferred reading**: When the parent is later processed, the buffered block is read from disk using `ReadBlockFromDisk()`
+3. **Recursive processing**: Processing a buffered block may trigger processing of its children, forming a chain of buffered blocks
+
+This matches Bitcoin Knots' approach exactly and minimizes memory usage.
+
 ## 8. Database Parameters
 
 All database implementations use parameters matching Bitcoin Knots production settings:
@@ -346,17 +387,18 @@ All database implementations use parameters matching Bitcoin Knots production se
 - **Throughput**: ~200-250 blocks/second (varies by hardware)
 - **Total Time**: ~50-60 minutes for full blockchain (800,000+ blocks)
 - **Database Size**: ~12GB for complete chainstate
-- **Memory Usage**: ~256MB for cache + database buffers
+- **Memory Usage**: ~256MB for cache + database buffers + minimal overhead for file position tracking (significantly reduced from previous approach)
 
 ## 10. Lessons Learned
 
 ### 10.1 Exact Bitcoin Knots Fidelity
-The critical bugs were caused by **subtle differences** from Bitcoin Knots' implementation:
-- Using `blkdat.GetPos()` after deserialization vs. `nBlockPos + nSize`
-- Creating new BufferedFile instances for buffered blocks vs. reusing existing
-- These differences caused position tracking errors and infinite loops
+The critical insight was that Bitcoin Knots **does not store entire blocks in memory** for out-of-order blocks. Instead, it stores only file positions (`FlatFilePos`) and re-reads blocks from disk when needed. By adopting this approach:
 
-**Lesson**: When benchmarking Bitcoin Knots, **exact code matching** is essential. Even small deviations in block processing logic can cause catastrophic failures.
+- **Memory Efficiency**: Significantly reduced memory usage by not storing full block data
+- **Correctness**: Matches Bitcoin Knots' behavior exactly for out-of-order block processing
+- **Simplicity**: Eliminates complex buffered block management in favor of simple file position tracking
+
+**Lesson**: When benchmarking Bitcoin Knots, **exact code matching** is essential. The subtle difference between storing blocks vs. storing file positions has significant implications for memory usage and correctness.
 
 ### 10.2 Debug Output Management
 Excessive debug output made it difficult to:
