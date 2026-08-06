@@ -295,27 +295,8 @@ std::unique_ptr<CCoinsView> CreateLMDBView(const std::string& db_path, size_t ca
     db_params.path = fs::u8path(db_path.c_str());
     db_params.cache_bytes = cache_size;
     db_params.memory_only = false;
-    db_params.wipe_data = true;
+    db_params.wipe_data = false;
     db_params.obfuscate = false;
-
-    // Wipe the database if requested (matches Bitcoin Knots behavior)
-    if (db_params.wipe_data) {
-#ifdef DEBUG
-        std::cerr << "DBG: Wiping LMDB database at " << db_path << "\n";
-#endif
-        fs::path db_path_fs = fs::u8path(db_path);
-        if (fs::exists(db_path_fs)) {
-            // For LMDB, we need to remove the directory and its contents
-            bool removed = fs::remove_all(db_path_fs);
-#ifdef DEBUG
-            std::cerr << "DBG: LMDB remove_all result: " << removed << "\n";
-#endif
-        } else {
-#ifdef DEBUG
-            std::cerr << "DBG: LMDB database directory does not exist\n";
-#endif
-        }
-    }
 
     CoinsViewOptions options;
     options.batch_write_bytes = 64 * 1024 * 1024;

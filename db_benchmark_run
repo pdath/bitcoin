@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -e
+ulimit -c unlimited  # Enable core dumps
 
 # Each build can take 20 minutes
 nice cmake --build build-leveldb -j$(nproc) -t db_benchmark

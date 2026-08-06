@@ -222,28 +222,8 @@ std::unique_ptr<CCoinsView> CreateDatabaseView(const std::string& db_path, size_
     db_params.path = fs::u8path(db_path.c_str());
     db_params.cache_bytes = cache_size;
     db_params.memory_only = false;
-    db_params.wipe_data = true;
+    db_params.wipe_data = false;
     db_params.obfuscate = false;
-
-    // Wipe the database if requested (matches Bitcoin Knots behavior)
-    if (db_params.wipe_data) {
-#ifdef DEBUG
-        std::cerr << "DBG: Wiping LevelDB database at " << db_path << "\n";
-#endif
-        leveldb::Options wipe_options;
-        wipe_options.create_if_missing = true;
-        leveldb::Status status = leveldb::DestroyDB(db_path, wipe_options);
-        if (!status.ok()) {
-#ifdef DEBUG
-            std::cerr << "DBG: DestroyDB status: " << status.ToString() << " (ok=" << status.ok() << ")\n";
-#endif
-            // Don't assert - this might be expected if directory doesn't exist
-        } else {
-#ifdef DEBUG
-            std::cerr << "DBG: Successfully wiped LevelDB database\n";
-#endif
-        }
-    }
 
     CoinsViewOptions options;
     options.batch_write_bytes = 64 * 1024 * 1024;
