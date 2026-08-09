@@ -339,8 +339,9 @@ std::unique_ptr<CCoinsView> CreateLMDBView(const std::string& db_path, size_t ca
     DBParams db_params;
     db_params.path = fs::u8path(db_path.c_str());
     // For LMDB, mapsize needs to be large enough for the entire database
-    // The chainstate is ~12GB, so hard code to 16GB
-    db_params.cache_bytes = 16ULL * 1024 * 1024 * 1024;
+    // The chainstate is ~12GB, but we need extra space for growth and overhead
+    // Hard code to 32GB to be safe
+    db_params.cache_bytes = 32ULL * 1024 * 1024 * 1024;
     db_params.memory_only = false;
     db_params.wipe_data = false;
     db_params.obfuscate = false;
