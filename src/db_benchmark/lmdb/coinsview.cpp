@@ -52,8 +52,8 @@ CCoinsViewDB_LMDB::CCoinsViewDB_LMDB(const DBParams& db_params, const CoinsViewO
     mdb_txn_commit(txn);
     
     // Check if database is empty
-    uint256 best_block = GetBestBlock();
 #ifdef DEBUG
+    uint256 best_block = GetBestBlock();
     std::cerr << "DBG: LMDB opened, GetBestBlock()=" << best_block.ToString() << " isNull=" << best_block.IsNull() << "\n";
 #endif
 }
@@ -183,11 +183,51 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
     int rc = mdb_txn_begin(const_cast<MDB_env*>(m_env), nullptr, 0, &txn);
     assert(rc == MDB_SUCCESS);
 
+    uint256 old_tip;
+    std::vector<uint256> old_heads;
+
     if (!hashBlock.IsNull()) {
         // Full block write with best block tracking
-        uint256 old_tip = GetBestBlock();
+        // Read old_tip and old_heads within the write transaction to avoid
+        // conflicting read/write transactions in LMDB
+        {
+            MDB_val key;
+            key.mv_size = 1;
+            uint8_t best_block_key = DB_BEST_BLOCK;
+            key.mv_data = reinterpret_cast<char*>(&best_block_key);
+            
+            MDB_val value;
+            rc = mdb_get(txn, m_dbi, &key, &value);
+            if (rc == MDB_SUCCESS) {
+                try {
+                    DataStream ssValue;
+                    ssValue.write(Span<const std::byte>(reinterpret_cast<const std::byte*>(value.mv_data), value.mv_size));
+                    ssValue >> old_tip;
+                } catch (...) {
+                    old_tip = uint256();
+                }
+            } else {
+                old_tip = uint256();
+            }
+        }
+
         if (old_tip.IsNull()) {
-            std::vector<uint256> old_heads = GetHeadBlocks();
+            MDB_val key;
+            key.mv_size = 1;
+            uint8_t head_blocks_key = DB_HEAD_BLOCKS;
+            key.mv_data = reinterpret_cast<char*>(&head_blocks_key);
+            
+            MDB_val value;
+            rc = mdb_get(txn, m_dbi, &key, &value);
+            if (rc == MDB_SUCCESS) {
+                try {
+                    DataStream ssValue;
+                    ssValue.write(Span<const std::byte>(reinterpret_cast<const std::byte*>(value.mv_data), value.mv_size));
+                    ssValue >> old_heads;
+                } catch (...) {
+                    old_heads.clear();
+                }
+            }
             if (old_heads.size() == 2) {
                 assert(old_heads[0] == hashBlock);
                 old_tip = old_heads[1];
@@ -201,7 +241,8 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
             uint8_t best_block_key = DB_BEST_BLOCK;
             key.mv_data = reinterpret_cast<char*>(&best_block_key);
             rc = mdb_del(txn, m_dbi, &key, nullptr);
-            assert(rc == MDB_SUCCESS);
+            // MDB_NOTFOUND is acceptable if the key doesn't exist yet (first write)
+            assert(rc == MDB_SUCCESS || rc == MDB_NOTFOUND);
         }
         
         {
@@ -232,7 +273,8 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
             
             if (it->second.coin.IsSpent()) {
                 rc = mdb_del(txn, m_dbi, &key, nullptr);
-                assert(rc == MDB_SUCCESS);
+                // MDB_NOTFOUND is acceptable if the coin doesn't exist
+                assert(rc == MDB_SUCCESS || rc == MDB_NOTFOUND);
             } else {
                 DataStream ssValue;
                 ssValue << it->second.coin;
@@ -256,7 +298,8 @@ bool CCoinsViewDB_LMDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& 
             uint8_t head_blocks_key = DB_HEAD_BLOCKS;
             key.mv_data = reinterpret_cast<char*>(&head_blocks_key);
             rc = mdb_del(txn, m_dbi, &key, nullptr);
-            assert(rc == MDB_SUCCESS);
+            // MDB_NOTFOUND is acceptable if the key doesn't exist yet
+            assert(rc == MDB_SUCCESS || rc == MDB_NOTFOUND);
         }
         
         {
@@ -293,7 +336,9 @@ size_t CCoinsViewDB_LMDB::EstimateSize() const {
 std::unique_ptr<CCoinsView> CreateLMDBView(const std::string& db_path, size_t cache_size) {
     DBParams db_params;
     db_params.path = fs::u8path(db_path.c_str());
-    db_params.cache_bytes = cache_size;
+    // For LMDB, mapsize needs to be large enough for the entire database
+    // The chainstate is ~12GB, so hard code to 16GB
+    db_params.cache_bytes = 16ULL * 1024 * 1024 * 1024;
     db_params.memory_only = false;
     db_params.wipe_data = false;
     db_params.obfuscate = false;
