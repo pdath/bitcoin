@@ -39,7 +39,9 @@ CCoinsViewDB_LMDB::CCoinsViewDB_LMDB(const DBParams& db_params, const CoinsViewO
     rc = mdb_env_set_mapsize(m_env, m_map_size);
     assert(rc == MDB_SUCCESS);
     
-    rc = mdb_env_open(m_env, m_path.c_str(), MDB_NOSUBDIR, 0664);
+    // Create directory for LMDB files
+    fs::create_directories(m_path);
+    rc = mdb_env_open(m_env, m_path.c_str(), 0, 0664);
     assert(rc == MDB_SUCCESS);
     
     MDB_txn* txn = nullptr;
