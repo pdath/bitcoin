@@ -115,6 +115,13 @@ const std::vector<std::string> CHECKLEVEL_DOC {
     "each level includes the checks of the previous levels",
 };
 
+// Return whether the completed full flush should compact chainstate
+static bool ShouldCompactChainstate(bool in_ibd)
+{
+    static constexpr uint32_t flush_ratio{320}; // Roughly every 2 weeks with hourly flushes
+    return !in_ibd && FastRandomContext().randrange(flush_ratio) == 0;
+}
+
 SpkReuseModes SpkReuseMode;
 
 TRACEPOINT_SEMAPHORE(validation, block_connected);
@@ -1451,16 +1458,13 @@ unsigned int PolicyScriptVerifyFlags(const ignore_rejects_type& ignore_rejects)
         return STANDARD_SCRIPT_VERIFY_FLAGS;
     }
     if (ignore_rejects.count("non-mandatory-script-verify-flag")) {
-        return MANDATORY_SCRIPT_VERIFY_FLAGS;
+        return MANDATORY_SCRIPT_VERIFY_FLAGS | REDUCED_DATA_MANDATORY_VERIFY_FLAGS;
     }
 
     unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS;
     if (ignore_rejects.count("non-mandatory-script-verify-flag-upgradable")) {
         constexpr unsigned int upgradable_policy_flags =
             SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
-            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM |
-            SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION |
-            SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS |
             SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE;
         flags &= ~upgradable_policy_flags;
     } else {
@@ -1503,7 +1507,7 @@ unsigned int PolicyScriptVerifyFlags(const ignore_rejects_type& ignore_rejects)
     if (ignore_rejects.count("non-mandatory-script-verify-flag-const_scriptcode")) {
         flags &= ~SCRIPT_VERIFY_CONST_SCRIPTCODE;
     }
-    flags |= MANDATORY_SCRIPT_VERIFY_FLAGS;  // for safety
+    flags |= MANDATORY_SCRIPT_VERIFY_FLAGS | REDUCED_DATA_MANDATORY_VERIFY_FLAGS;  // for safety
     return flags;
 }
 
@@ -2918,12 +2922,15 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && parallel_script_checks ? &m_chainman.GetCheckQueue() : nullptr);
 
-    // For BIP9 deployments, get the activation height dynamically
-    const auto reduced_data_start_height = DeploymentActiveAt(*pindex, m_chainman, Consensus::DEPLOYMENT_REDUCED_DATA)
+    // For BIP9 deployments, get the activation height dynamically. When RDTS is
+    // inactive the start height is 0, so no input is treated as pre-activation and
+    // flags_per_input stays empty (keeping the script-execution cache enabled).
+    const bool reduced_data_active{DeploymentActiveAt(*pindex, m_chainman, Consensus::DEPLOYMENT_REDUCED_DATA)};
+    const auto reduced_data_start_height = reduced_data_active
         ? m_chainman.m_versionbitscache.StateSinceHeight(pindex->pprev, params.GetConsensus(), Consensus::DEPLOYMENT_REDUCED_DATA)
-        : std::numeric_limits<int>::max();
+        : 0;
 
-    const CheckTxInputsRules chk_input_rules{DeploymentActiveAt(*pindex, m_chainman, Consensus::DEPLOYMENT_REDUCED_DATA) ? CheckTxInputsRules::OutputSizeLimit : CheckTxInputsRules::None};
+    const CheckTxInputsRules chk_input_rules{reduced_data_active ? CheckTxInputsRules::OutputSizeLimit : CheckTxInputsRules::None};
 
     // Check generation tx output sizes if REDUCED_DATA is active
     if (chk_input_rules.test(CheckTxInputsRules::OutputSizeLimit)) {
@@ -3248,9 +3255,20 @@ bool Chainstate::FlushStateToDisk(
             m_next_write = FastRandomContext().rand_uniform_delay(NodeClock::now() + DATABASE_WRITE_INTERVAL_MIN, range);
         }
     }
-    if (full_flush_completed && m_chainman.m_options.signals) {
-        // Update best block in wallet (so we can detect restored wallets).
-        m_chainman.m_options.signals->ChainStateFlushed(this->GetRole(), m_chain.GetLocator());
+
+    if (full_flush_completed) {
+        if (m_chainman.m_options.signals) {
+            // Update best block in wallet (so we can detect restored wallets).
+            m_chainman.m_options.signals->ChainStateFlushed(this->GetRole(), m_chain.GetLocator());
+        }
+
+        if (!m_chainman.m_interrupt && ShouldCompactChainstate(m_chainman.IsInitialBlockDownload())) {
+            try {
+                CoinsDB().CompactFull();
+            } catch (const std::exception& e) {
+                LogWarning("Failed to start chainstate compaction (%s)", e.what());
+            }
+        }
     }
     } catch (const std::runtime_error& e) {
         return FatalError(m_chainman.GetNotifications(), state, strprintf(_("System error while flushing: %s"), e.what()));
@@ -3677,8 +3695,11 @@ CBlockIndex* Chainstate::FindMostWorkChain()
                         // If we're missing data, then add back to m_blocks_unlinked,
                         // so that if the block arrives in the future we can try adding
                         // to setBlockIndexCandidates again.
-                        m_blockman.m_blocks_unlinked.insert(
-                            std::make_pair(pindexFailed->pprev, pindexFailed));
+                        // Avoid duplicate entries in m_blocks_unlinked. If the same entry is
+                        // processed twice in ReceivedBlockTransactions(), it may be re-added to
+                        // setBlockIndexCandidates with a modified nSequenceId, breaking ordering
+                        // guarantees and leading to undefined behavior.
+                        m_blockman.AddUnlinkedBlock(pindexFailed);
                     }
                     setBlockIndexCandidates.erase(pindexFailed);
                     pindexFailed = pindexFailed->pprev;
@@ -4313,7 +4334,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
         }
     } else {
         if (pindexNew->pprev && pindexNew->pprev->IsValid(BLOCK_VALID_TREE)) {
-            m_blockman.m_blocks_unlinked.insert(std::make_pair(pindexNew->pprev, pindexNew));
+            m_blockman.AddUnlinkedBlock(pindexNew);
         }
     }
 }
@@ -5432,6 +5453,128 @@ bool Chainstate::NeedsRedownload() const
     return false;
 }
 
+std::vector<CBlockIndex*> Chainstate::FindRdtsSignalingViolations() const
+{
+    AssertLockHeld(cs_main);
+
+    std::vector<CBlockIndex*> violators;
+
+    const Consensus::Params& params{m_chainman.GetConsensus()};
+    // RDTS is the only Knots deployment that sets a mandatory-signaling
+    // deadline; this is deliberately scoped to it. A future deployment with
+    // max_activation_height set would need its own handling.
+    const Consensus::DeploymentPos dep{Consensus::DEPLOYMENT_REDUCED_DATA};
+    const auto& deployment{params.vDeployments[dep]};
+
+    // Only a configured mandatory-signaling deadline can be violated. A
+    // non-enforcing node leaves max_activation_height at its INT_MAX default,
+    // so it is naturally excluded here.
+    if (deployment.max_activation_height >= std::numeric_limits<int>::max()) return violators;
+
+    // A block must signal only within [max_activation_height - 2P, max_activation_height - P).
+    const int period{static_cast<int>(params.nMinerConfirmationWindow)};
+    const int window_begin{deployment.max_activation_height - (2 * period)};
+    const int window_end{deployment.max_activation_height - period};
+
+    // One pass over the whole block index (not just the active chain, so a
+    // violator on a side branch is corrected too). The cheap height comparison
+    // gates the more expensive versionbits State() lookup. Within the window a
+    // block was required to signal iff the deployment is STARTED for its branch,
+    // the same condition ConnectBlock/ContextualCheckBlockHeaderVolatile applies.
+    // The verdict is re-derived from the stored header, so it does not change as
+    // other blocks are invalidated and one scan suffices.
+    for (auto& [_, index] : m_blockman.m_block_index) {
+        if (index.nStatus & BLOCK_FAILED_MASK) continue;             // already handled
+        if (index.nHeight < window_begin || index.nHeight >= window_end) continue;
+        if (m_chainman.m_versionbitscache.State(index.pprev, params, dep) != ThresholdState::STARTED) continue;
+        const bool signals_top{(index.nVersion & VERSIONBITS_TOP_MASK) == VERSIONBITS_TOP_BITS};
+        const bool signals_bit{(index.nVersion & (uint32_t{1} << deployment.bit)) != 0};
+        if (signals_top && signals_bit) continue;                    // signaled correctly
+        violators.push_back(&index);
+    }
+
+    return violators;
+}
+
+bool Chainstate::CorrectRdtsInvalidBlocks(bilingual_str& error)
+{
+    AssertLockNotHeld(m_chainstate_mutex);
+    AssertLockNotHeld(::cs_main);
+
+    std::vector<CBlockIndex*> violators;
+    {
+        LOCK(cs_main);
+        violators = FindRdtsSignalingViolations();
+    }
+
+    // Invalidate lowest height first: doing so also fails a violator's descendants,
+    // so a higher violator on the same branch is skipped below. This calls
+    // InvalidateBlock only for the topmost violator of each branch, off the single
+    // scan above. Marks persist to the block index, so this is a no-op on every
+    // subsequent startup.
+    std::sort(violators.begin(), violators.end(),
+              [](const CBlockIndex* a, const CBlockIndex* b) { return a->nHeight < b->nHeight; });
+
+    bool invalidated{false};
+    for (CBlockIndex* target : violators) {
+        // m_interrupt here is the shutdown signal, so an interrupt means shutdown:
+        // return success and let the caller's shutdown check exit; any uncorrected
+        // violators are re-scanned on the next start.
+        if (m_chainman.m_interrupt) return true;
+
+        bool needs_reindex{false};
+        {
+            LOCK(cs_main);
+            if (target->nStatus & BLOCK_FAILED_MASK) continue;  // already failed as a descendant
+            // Correcting an active-chain violator disconnects every block from the
+            // tip down to and including it. If any of those has been pruned we
+            // cannot rewind, and a partial rewind would strand good blocks that can
+            // be neither reconnected nor re-downloaded. Refuse to start instead, as
+            // BIP148 did for the analogous case. (Pruning drops a block's data and
+            // undo together, so IsBlockPruned covers both.) Only the active-chain
+            // disconnect needs local data; the reconnect side is safe because
+            // FindMostWorkChain skips candidate chains with missing data.
+            if (m_chain.Contains(target)) {
+                for (const CBlockIndex* b{m_chain.Tip()}; b != target->pprev; b = b->pprev) {
+                    if (m_blockman.IsBlockPruned(*b)) {
+                        needs_reindex = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (needs_reindex) {
+            LogError("RDTS: cannot correct inherited invalid block %s at height %d: required block "
+                     "data has been pruned\n", target->GetBlockHash().ToString(), target->nHeight);
+            error = _("A block that violates the BIP110/RDTS mandatory-signaling rule was inherited from a client that was not enforcing it, and correcting it needs block data that has been pruned");
+            return false;
+        }
+
+        LogPrintf("RDTS: block %s at height %d violates mandatory signaling and was "
+                  "inherited from a non-enforcing client; marking it invalid\n",
+                  target->GetBlockHash().ToString(), target->nHeight);
+
+        BlockValidationState state;
+        if (!InvalidateBlock(state, target) || !state.IsValid()) {
+            LogError("RDTS: failed to invalidate %s: %s\n", target->GetBlockHash().ToString(), state.ToString());
+            error = _("Failed to correct a block that violates the BIP110/RDTS mandatory-signaling rule");
+            return false;
+        }
+        invalidated = true;
+    }
+
+    // Reconnect to the best remaining valid chain once, after all invalidations.
+    if (invalidated) {
+        BlockValidationState state;
+        if (!ActivateBestChain(state) || !state.IsValid()) {
+            LogError("RDTS: failed to activate best chain after correction: %s\n", state.ToString());
+            error = _("Failed to correct a block that violates the BIP110/RDTS mandatory-signaling rule");
+            return false;
+        }
+    }
+    return true;
+}
+
 void Chainstate::ClearBlockIndexCandidates()
 {
     AssertLockHeld(::cs_main);
@@ -5907,13 +6050,12 @@ void ChainstateManager::CheckBlockIndex()
         // Check whether this block is in m_blocks_unlinked.
         std::pair<std::multimap<CBlockIndex*,CBlockIndex*>::iterator,std::multimap<CBlockIndex*,CBlockIndex*>::iterator> rangeUnlinked = m_blockman.m_blocks_unlinked.equal_range(pindex->pprev);
         bool foundInUnlinked = false;
-        while (rangeUnlinked.first != rangeUnlinked.second) {
-            assert(rangeUnlinked.first->first == pindex->pprev);
-            if (rangeUnlinked.first->second == pindex) {
+        for (auto it = rangeUnlinked.first; it != rangeUnlinked.second; ++it) {
+            assert(it->first == pindex->pprev);
+            if (it->second == pindex) {
+                assert(!foundInUnlinked); // No duplicates in m_blocks_unlinked
                 foundInUnlinked = true;
-                break;
             }
-            rangeUnlinked.first++;
         }
         if (pindex->pprev && (pindex->nStatus & BLOCK_HAVE_DATA) && pindexFirstNeverProcessed != nullptr && pindexFirstInvalid == nullptr) {
             // If this block has block data available, some parent was never received, and has no invalid parents, it must be in m_blocks_unlinked.

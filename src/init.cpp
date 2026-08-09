@@ -588,7 +588,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-listen", strprintf("Accept connections from outside (default: %u if no -proxy, -connect or -maxconnections=0)", DEFAULT_LISTEN), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-listenonion", strprintf("Automatically create Tor onion service (default: %d)", DEFAULT_LISTEN_ONION), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-maxconnections=<n>", strprintf("Maintain at most <n> automatic connections to peers (default: %u). This limit does not apply to connections manually added via -addnode or the addnode RPC, which have a separate limit of %u.", DEFAULT_MAX_PEER_CONNECTIONS, MAX_ADDNODE_CONNECTIONS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-    argsman.AddArg("-maxstaleoutbound=<n>", strprintf("Tolerate at most <n> automatic outbound connections to peers running stale consensus rules (default: %u). This limit does not apply to connections manually added via -addnode or the addnode RPC. Connections to full nodes will still be sought and preferred over stale ones.", DEFAULT_MAXSTALEOUTBOUND), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-maxstaleoutbound=<n>", strprintf("Tolerate at most <n> automatic outbound connections to peers running stale consensus rules (maximum: %u, default: %u). These are additional to the automatic outbound target but count within the -maxconnections limit. This limit does not apply to connections manually added via -addnode or the addnode RPC. Connections to full nodes will still be sought and preferred over stale ones.", MAX_STALE_OUTBOUND_CONNECTIONS, DEFAULT_MAXSTALEOUTBOUND), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-maxreceivebuffer=<n>", strprintf("Maximum per-connection receive buffer, <n>*1000 bytes (default: %u)", DEFAULT_MAXRECEIVEBUFFER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-maxsendbuffer=<n>", strprintf("Maximum per-connection memory usage for the send buffer, <n>*1000 bytes (default: %u)", DEFAULT_MAXSENDBUFFER), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-maxuploadtarget=<n>", strprintf("Tries to keep outbound traffic under the given target per 24h. Limit does not apply to peers with 'download' permission or blocks created within past week. 0 = no limit (default: %s). Optional suffix units [k|K|m|M|g|G|t|T] (default: M). Lowercase is 1000 base while uppercase is 1024 base", DEFAULT_MAX_UPLOAD_TARGET), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -601,7 +601,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-i2pacceptincoming", strprintf("Whether to accept inbound I2P connections (default: %i). Ignored if -i2psam is not set. Listening for inbound I2P connections is done through the SAM proxy, not by binding to a local address and port.", DEFAULT_I2P_ACCEPT_INCOMING), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-onlynet=<net>", "Make automatic outbound connections only to network <net> (" + Join(GetNetworkNames(), ", ") + "). Inbound and manual connections are not affected by this option. It can be specified multiple times to allow multiple networks.", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-v2transport", strprintf("Support v2 transport (default: %u)", DEFAULT_V2_TRANSPORT), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-    argsman.AddArg("-v2onlyclearnet", strprintf("Disallow outbound v1 connections on IPV4/IPV6 (default: %u). Enable this option only if you really need it. Use -listen=0 to disable inbound connections since they can be unencrypted.", false), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-v2onlyclearnet", strprintf("Ensure all outbound IPv4/IPv6 peers use encrypted network traffic (default: %u). Using this option requires -listen=0 and takes valuable listening capacity away from the network. Enable this option only if passive network observers like ISPs, firewalls, etc. pose a threat and unencrypted network traffic must be avoided. Note: Encryption protects message contents but does not obscure that you are running a Bitcoin node. Observers can still identify Bitcoin activity from your outbound connection attempts to the default port (8333) or by analysing traffic patterns.", DEFAULT_V2_ONLY_CLEARNET), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::CONNECTION);
     argsman.AddArg("-peerbloomfilters", strprintf("Support filtering of blocks and transactions with bloom filters (default: %s)", DEFAULT_PEERBLOOMFILTERS ? "1" : "localhost only"), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-peerblockfilters", strprintf("Serve compact block filters to peers per BIP 157 (default: %u)", DEFAULT_PEERBLOCKFILTERS), ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-txreconciliation", strprintf("Enable transaction reconciliations per BIP 330 (default: %d)", DEFAULT_TXRECONCILIATION_ENABLE), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::CONNECTION);
@@ -980,7 +980,7 @@ void InitParameterInteraction(ArgsManager& args)
     if (!onlynets.empty()) {
         bool clearnet_reachable = std::any_of(onlynets.begin(), onlynets.end(), [](const auto& net) {
             const auto n = ParseNetwork(net);
-            return n == NET_IPV4 || n == NET_IPV6;
+            return IsClearnet(n);
         });
         if (!clearnet_reachable && args.SoftSetBoolArg("-dnsseed", false)) {
             LogInfo("parameter interaction: -onlynet excludes IPv4 and IPv6 -> setting -dnsseed=0\n");
@@ -1120,7 +1120,7 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     // Signal NODE_P2P_V2 if BIP324 v2 transport is enabled.
     if (args.GetBoolArg("-v2transport", DEFAULT_V2_TRANSPORT)) {
         g_local_services = ServiceFlags(g_local_services | NODE_P2P_V2);
-    } else if (args.GetBoolArg("-v2onlyclearnet", false)) {
+    } else if (args.GetBoolArg("-v2onlyclearnet", DEFAULT_V2_ONLY_CLEARNET)) {
         return InitError(_("Cannot set -v2onlyclearnet to true when v2transport is disabled."));
     }
 
@@ -1155,6 +1155,12 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     // if listen=0, then disallow listenonion=1
     if (!args.GetBoolArg("-listen", DEFAULT_LISTEN) && args.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION)) {
         return InitError(Untranslated("Cannot set -listen=0 together with -listenonion=1"));
+    }
+
+    if (args.GetBoolArg("-v2onlyclearnet", DEFAULT_V2_ONLY_CLEARNET)) {
+        if (args.GetBoolArg("-listen", DEFAULT_LISTEN)) {
+            return InitError(_("Cannot set -v2onlyclearnet=1 with listen=1. See -help for details on -v2onlyclearnet."));
+        }
     }
 
     // Make sure enough file descriptors are available. We need to reserve enough FDs to account for the bare minimum,
@@ -2122,6 +2128,34 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         do_reindex_chainstate,
         kernel_cache_sizes,
         args);
+
+    // A data directory advanced by a client that was not enforcing BIP110/RDTS
+    // can contain blocks that violate RDTS mandatory signaling. Normal startup
+    // does not re-validate inherited history, so correct such state now: mark
+    // the offending blocks invalid and reorganize to the best valid chain. If
+    // the data needed to rewind has been pruned, report it as a load failure so
+    // the reindex prompt below offers recovery, rather than running on (or
+    // partially rewinding) an invalid chain.
+    //
+    // Skip this on any reindex: -reindex and -reindex-chainstate re-connect blocks
+    // through ConnectBlock, which re-enforces the rule and rejects violators during
+    // the rebuild, so the correction is redundant. It is also unsafe there: a
+    // chainstate reindex returns here with the active chain not yet built, and
+    // correcting against an empty chain would fail an internal consistency check.
+    //
+    // The block index is shared, so the invalid marks apply to any background
+    // (assumeutxo) chainstate too; only the active chainstate is reorganized here.
+    // Safe while every snapshot base stays below the RDTS window (as today); a
+    // future snapshot base above the window would need re-review.
+    if (status == ChainstateLoadStatus::SUCCESS && !ShutdownRequested(node) &&
+            !do_reindex && !do_reindex_chainstate) {
+        bilingual_str rdts_error;
+        if (!node.chainman->ActiveChainstate().CorrectRdtsInvalidBlocks(rdts_error)) {
+            status = ChainstateLoadStatus::FAILURE;
+            error = rdts_error;
+        }
+    }
+
     if (status == ChainstateLoadStatus::FAILURE && !do_reindex && !ShutdownRequested(node)) {
         // If reindex=auto, directly start the reindex
         bool fAutoReindex = (args.GetArg("-reindex", "0") == "auto");
@@ -2131,7 +2165,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             do_retry = HasTestOption(args, "reindex_after_failure_noninteractive_yes") ||
             uiInterface.ThreadSafeQuestion(
             error + Untranslated(".\n\n") + _("Do you want to rebuild the databases now?"),
-            error.original + ".\nPlease restart with -reindex or -reindex-chainstate to recover.",
+            error.original + (args.GetIntArg("-prune", 0) ? ".\nPlease restart with -reindex to recover." : ".\nPlease restart with -reindex or -reindex-chainstate to recover."),
             "", CClientUIInterface::MSG_ERROR | CClientUIInterface::BTN_ABORT);
         } else {
             LogPrintf("Automatically running a reindex.\n");
@@ -2375,7 +2409,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     connOptions.whitelist_forcerelay = args.GetBoolArg("-whitelistforcerelay", DEFAULT_WHITELISTFORCERELAY);
     connOptions.whitelist_relay = args.GetBoolArg("-whitelistrelay", DEFAULT_WHITELISTRELAY);
     connOptions.m_capture_messages = args.GetBoolArg("-capturemessages", false);
-    connOptions.disable_v1conn_clearnet = args.GetBoolArg("-v2onlyclearnet", false);
+    connOptions.m_v2only_clearnet = args.GetBoolArg("-v2onlyclearnet", DEFAULT_V2_ONLY_CLEARNET);
 
     // Port to bind to if `-bind=addr` is provided without a `:port` suffix.
     const uint16_t default_bind_port =
