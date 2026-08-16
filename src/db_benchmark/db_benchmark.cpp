@@ -460,7 +460,7 @@ static void ProcessAllBlocks(CCoinsViewCache& cache, CCoinsView& db_view, const 
                     
                     // Flush cache periodically to avoid using too much memory
                     // Mirror Bitcoin Knots' behavior: flush less frequently to batch writes
-                    if (nBlocks % 1000 == 0) {
+                    if (nBlocks % 10000 == 0) {
                         bool flush_ok;
                         {
                             ScopedTimer timer(g_metrics_collector.stats_cache_flush);

@@ -21,6 +21,11 @@ private:
     MDB_dbi m_dbi;
     std::string m_path;
     size_t m_map_size;
+    
+    // Diagnostic tracking
+    size_t m_total_put;
+    size_t m_total_del;
+    uint64_t m_file_size_last;
 
 public:
     CCoinsViewDB_LMDB(const DBParams& db_params, const CoinsViewOptions& options);
@@ -33,6 +38,9 @@ public:
     bool BatchWrite(CoinsViewCacheCursor& cursor, const uint256& hashBlock) override;
     std::unique_ptr<CCoinsViewCursor> Cursor() const override;
     size_t EstimateSize() const override;
+    
+    // Test method for debugging
+    void TestActiveReaders() const;
 };
 
 /**
